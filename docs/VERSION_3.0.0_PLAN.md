@@ -56,17 +56,35 @@ there is no low-friction way to do that thing, the release looks broken.
 
 ## What 3.0.0 is deliberately *not*
 
-**It is not the licensing release.** 24 of the 62 open issues are the iText → OfficeIMO
-migration. PR #165 measured the core assumption and it did not hold: OfficeIMO's
-`PdfRedactionApplier` excises an entire text object's byte range on any intersection with
-the redaction rectangle, where this project's `ContentStreamEditor` splits at the glyph
-boundary. Since most producers emit one text object per line, redacting one word would
-remove the line. A partial migration leaves iText in the tree for exactly the two features
-that cannot move — redaction and text editing — so it does not achieve the licence goal
-either.
+**It is not the licensing release** — but the reason has changed, and the decision is now
+genuinely open. 24 of the 62 open issues are the iText → OfficeIMO migration.
+
+PR #165 parked that cluster on a measured finding: OfficeIMO's `PdfRedactionApplier`
+excised an entire text object's byte range on any intersection with the redaction
+rectangle, where this project's `ContentStreamEditor` splits at the glyph boundary. Since
+most producers emit one text object per line, redacting one word would have removed the
+line.
+
+**That finding is stale as of OfficeIMO `v20260906153413` (2026-09-06).** Upstream commit
+`6a38416`, "Preserve unaffected PDF glyphs during redaction" (#2435, 2026-09-03, +3,339
+lines across 30 files), added `PdfContentStreamTextRewriter.TryRemoveIntersectingGlyphs`:
+per-glyph excision that re-emits surviving glyphs with width-compensating `TJ`
+displacements and retains the original encoded bytes, font resources, text state and
+text-object structure. Whole-object removal is now only the fail-closed fallback for
+mappings it cannot prove safe. The planner intersects at character level through the same
+shared `PdfTextSpanGeometry`, and both paths resolve widths through
+`ResourceResolver.GetFontWidthProviders`. Each of PR #165's four technical objections is
+answered; see the audit recorded on #115.
+
+So the blocking *technical* reason is gone. What remains is a scheduling judgement, and it
+is the one this plan makes: **3.0.0 is already carrying four contract changes, and a PDF
+backend swap is not a fifth.** The migration is a 3.1-or-later programme with its own
+release, its own golden-file baseline and its own risk budget — not a passenger on a
+release whose thesis is batch redaction and provable removal.
 
 **Consequence for the release notes: 3.0.0 stays GPL-3.0 with an AGPL dependency.** Do not
-imply otherwise. The engine cluster stays open, parked, and honest about what unblocks it.
+imply otherwise, and do not describe the engine cluster as blocked — it is deferred, which
+is a different word with a different meaning to anyone reading the tracker.
 
 Two pieces of it are still worth doing now, on their own merits — see workstream A.
 
@@ -81,11 +99,11 @@ work, and because #116 is a refactor that every later workstream benefits from.
 
 | Issue | Work | Notes |
 | --- | --- | --- |
-| #115 | Merge PR #165, record the recommendation in the issue, file the upstream ask | The upstream ask (sub-text-object redaction granularity, or making `PdfContentStreamInterpreter`/`TextContentParser` public) is the single thing that would reopen this. Machinery exists and is `internal`, so it is a plausible request, not a rewrite demand. |
+| #115 | **Re-open and re-measure before merging PR #165.** Its granularity finding no longer holds against OfficeIMO `v20260906153413`+. Amend the PR to record the upstream change, then decide the cluster on scheduling grounds rather than capability grounds. | The upstream ask is now partly moot: `PdfContentStreamInterpreter`/`TextContentParser` are still `internal`, but glyph-granular redaction no longer requires them — it is reachable through the public `PdfDocumentRedactions.Apply`/`ApplyWithEvidence`. Do not file the ask as written. |
 | #127 | Add an explicit `BouncyCastle.Cryptography` `PackageReference` inside `[2.7.0, 3.0.0)` | Safe no-op today; today it arrives only as an `itext.bouncy-castle-adapter` transitive, so `CertificateFactory` breaks the moment iText is dropped. Do it while it costs nothing. |
 | #116 | The capability seam — 9 interfaces, one PR each | Worth doing without any migration: it isolates the 28 iText-using files, makes the tools testable against fakes, and documents what PDF capabilities the app actually relies on. Enforce with a `check-innerhtml.mjs`-style guard: no `using iText.*` outside the implementation folder. |
-| #125 | Keep open as the **re-open trigger**, not as scheduled work | The trip-rate measurement only becomes worth running if the upstream change lands. |
-| #126, #128–#145, #151 | Label `blocked:upstream` and add one comment each pointing at the #115 decision | They are good analysis and should not be closed. They should also not sit in a milestone. |
+| #125 | **Run the trip-rate measurement in 3.0.0.** The upstream change it was waiting on has landed. | Measuring now against `OfficeIMO.Pdf` 3.4.3 is what turns the 3.1 migration decision from an argument into a number. Cheap, and it uses the #53 golden-file corpus that already exists. |
+| #126, #128–#145, #151 | Label `deferred:3.1` (not `blocked:upstream`) and add one comment each pointing at the #115 decision | They are good analysis and should not be closed. They should also not sit in a 3.0.0 milestone. Nothing upstream blocks them any more, so the old label would misreport the tracker. |
 
 **Acceptance:** #115 has a recorded decision with a named unblocking condition; #116 and
 #127 merged; the other 21 carry a blocking label and no milestone.
@@ -106,6 +124,29 @@ and run unattended over a directory. Use `RegexOptions.NonBacktracking` where th
 permits and a hard `matchTimeout` regardless; reject at parse time (#149) any pattern that
 cannot be constructed under those options, naming it. A catastrophic-backtracking pattern in
 a batch run is a hang with no operator watching.
+
+**Borrow the shape of this from upstream, even though we are not adopting the engine.**
+`OfficeIMO.Pdf` 3.4.3 ships a worked version of exactly this contract, and it is a better
+starting point than a blank page:
+
+- `PdfRedactionEvidenceReport` binds a reviewed plan to a `SourceSha256` and an
+  `OutputSha256`, so the evidence names the exact bytes in and the exact bytes out. #108's
+  report should do the same — a verification section that does not identify the artifact it
+  verified is not evidence.
+- Per item it records `VerifiedAbsent` / `Residual` / **`Inconclusive`**. That third state
+  is the one worth stealing: "we could not prove it is gone" is not "it is gone", and a
+  report with only a two-state ✓/✗ will quietly round the former into the latter. This is
+  the same failure mode the risk table already flags for batch runs.
+- `PdfRedactionVerificationOptions` enumerates the checks as separate switches — raw bytes,
+  encoded and hex strings, decoded streams, complete-stream inspection, managed rendering,
+  external validators — and the report echoes back which ones actually ran. That echo is
+  what makes #49's suite hard to stub out: a verification that reports *which* checks it
+  performed cannot be silently downgraded.
+- `CreateShareableSummary()` strips removed text, search criteria and labels from the
+  evidence. #48/#108 reports will be handed to the people a redaction was performed *for*;
+  a report that quotes the redacted strings back is a leak.
+
+None of this requires taking the dependency. It is a contract to copy, not code to import.
 
 **Ordering:** #49 → #108 (the verifier #49 builds is what #108 reports). #147 is
 independent and can run in parallel.
@@ -206,8 +247,8 @@ Three of the 62 are already satisfied and are inflating the backlog:
   only gap is that `docs/` has no `RELEASE_NOTES_2.0.4.md` to match the 2.0.1–2.0.3 series.
   Close by committing that file from the release body.
 - **#154** (split PR #124) — **done.** Piece 1 landed as #155, piece 2 as #156, PR #124 is
-  closed, and the portable-backend piece is superseded by PR #165's finding. Close with a
-  comment recording that.
+  closed. The portable-backend piece is deferred with the rest of the engine cluster — note
+  that, rather than citing PR #165's now-stale finding, and close.
 - **#66** ("form fields have properties that can be edited") — **needs triage, not
   scheduling.** One line of body, no acceptance criteria, unlabelled. Ask for specifics or
   close as insufficiently specified; do not carry it into a milestone.
