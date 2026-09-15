@@ -10,10 +10,22 @@ _Generated 2026-07-28. Source: 40 open issues (#17–#56) on `zanattamichael/chr
 
 ## Progress
 
+> **Superseded for planning purposes as of 2026-09-03.** This document remains the
+> record of the original 40-issue triage and the reasoning behind it, but it is no
+> longer the plan being worked. The backlog has grown to 62 open issues, most of them
+> filed after this was written. See **[`docs/VERSION_3.0.0_PLAN.md`](docs/VERSION_3.0.0_PLAN.md)**
+> for what is scheduled, what is blocked, and what is deferred. Of the original 40,
+> twenty are still open and are deferred to 3.1 — they are the editing and rendering
+> tail in Tiers 3–5 and 8–9 below.
+
 **Tier 0 is complete.** #18 + #22 (PR #59), #20 + #21 (PR #68), #24 (PR #67) are all merged.
 
-**Tier 2 is in flight:** #52 (PR #75) and #54 (PR #76) are open for review; #53 is
-sequenced after #52 so it can assert with that validator rather than reinventing one.
+**Tier 2 is complete, and Tier 1 all but one.** #23 landed in PR #83 and #29 is closed;
+#17 (forms menu redesign) is the one still open, and is deferred to 3.1. In Tier 2, #52
+landed in PR #75, #54 in PR #76, #53 in PR #78, #19 in PR #79, and #56 is closed. The
+safety net those produced — the export validator, the fuzz corpus and the golden-file
+suite — is what later work asserts against, and the 3.0.0 plan's release gates use it
+directly.
 
 Issues raised by this work, not in the original 40: **#72** (bare `catch {}` hides
 render failures), **#74** (ban interpolated `innerHTML` in `extension/src`), **#146**
