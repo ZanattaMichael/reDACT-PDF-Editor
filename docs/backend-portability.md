@@ -19,13 +19,96 @@ this file rated the content-stream work "🟡→🟢 by evidence of scale" — i
 capability from the size and naming of OfficeIMO's redaction files rather than from
 reading the algorithm. Reading the algorithm gives a different answer, recorded below.
 
-## Update — the blocking finding is fixed in unreleased `master`
+## Update 2 (2026-09-16) — it shipped, and the picture splits in two
 
-Everything below analyses `OfficeIMO.Pdf` **3.3.0**, which is what NuGet ships today
-(release `OfficeIMO-v20260902190744`, commit `bd9e881f`). That analysis stands for the
-shipped package.
+The previous update said the fixes were real but unpublished, so the verdict was
+*"blocked pending a release."* **That release exists.** `OfficeIMO.Pdf` **3.4.0** shipped
+on NuGet as release `OfficeIMO-v20260906153413` and is the first published version
+containing the glyph rewriter; three more have followed (**3.4.1**, **3.4.2**, **3.4.3** =
+`OfficeIMO-v20260912151212`, 2026-09-12). Confirmed against `api.nuget.org`'s flat
+container index, and by mapping each release tag to its `VersionPrefix`.
 
-Since it was written, `master` has picked up ~33 commits that fix the core blocker:
+For the record, since the owner asked specifically about
+`OfficeIMO-v20260902190744`: **that release does not contain any of this.** It is
+3.3.0, tagged at `bd9e881f`, and `PdfContentStreamTextRewriter.cs` does not exist in
+that tree — `git cat-file -e` reports the path "exists on disk, but not in" the tag. The
+glyph commit `6a384161` landed 2026-09-03, one day *after* it. What that release did
+carry, and which is separately interesting for #106, is `#2415` — easy local OCR and
+searchable-PDF support.
+
+So the timing question is answered. What replaces it is a **scope** question, because
+re-reading the shipped code at 3.4.3 shows the fix is narrower than "OfficeIMO now does
+glyph-level text surgery":
+
+> `PdfContentStreamTextRewriter.TryRemoveIntersectingGlyphs` has **exactly one caller**
+> in the entire library — `PdfRedactionApplier.TextScrubbing.cs:302`.
+
+**Redaction got the glyph rewriter. Text editing did not.** `PdfTextEditor` still routes
+through `RemoveTextPreservingUnmatchedSpans` → delete-and-re-stamp, and still resolves the
+re-stamped font through `ResolveStandardFont`, which maps every input to one of the 14
+standard fonts by substring-matching the base font name (`"bold"`, `"times"`, `"courier"`
+… else Helvetica). There is no embedded-font stamping path in `PdfStamper`. Anything
+OfficeIMO *writes* is Helvetica, Times or Courier.
+
+Two things soften that, and one does not:
+
+- **Softens it:** `RemoveTextPreservingUnmatchedSpans` calls
+  `PdfRedactionApplier.RemoveTextInAreas`, which *does* go through the rewriter. So
+  surviving neighbours now mostly survive in the content stream rather than being deleted
+  and redrawn. The collateral re-stamp set should be near-empty in the common case, firing
+  only where the rewriter fails closed (`ActualText` spans, vertical writing, encodings it
+  cannot split). Font substitution went from the default path to the fallback path.
+- **Softens it:** invisible-text handling is now a first-class targeting property
+  (`PdfRedactionArea.WithTextRenderingMode`), and there is a concealed-content API
+  (`OfficeContentConcealmentKind.InvisibleRenderingMode` / `TransparentText` /
+  `ClippedContent`) that did not exist before.
+- **Does not soften it:** text the editor *adds* — `Text.Replace`, `Text.Add`,
+  `Text.Move` — is always newly stamped, and always through `ResolveStandardFont`. Editing
+  a word set in embedded Calibri returns Helvetica. That is #29 exactly, and
+  `tests/PdfEditor.Core.Tests/TextFontFidelityTests.cs` guards against it.
+
+### What this means for the licence goal
+
+A partial migration does not achieve it — that has been the through-line of this document
+from the start, and it still holds. The question is now much narrower than it was:
+
+| Surface | Shipped state at 3.4.3 | Migratable? |
+|---|---|---|
+| Redaction content removal | Glyph-granular, width-compensated `TJ`, original encoding and font resources retained, whole-object removal as fail-closed fallback | **Yes** |
+| Redaction evidence | `ApplyWithEvidence` → source/output SHA-256, three-state per-item outcome, per-check switches | **Yes** — an upgrade |
+| Everything else (merge, pages, forms, encryption, signing, JS, Bates, watermark, Word import) | Mapped 🟢 below, unchanged by this update | **Yes** |
+| **Text editing fidelity** | Standard-font substitution on every stamp | **No** — regresses #29 |
+
+One feature now stands between this project and dropping iText. That is a materially
+different position from "blocked at the core."
+
+### The sharpened upstream ask
+
+The old ask — make `PdfContentStreamInterpreter` / `TextContentParser` public — is moot
+*for redaction*, which is now reachable through the public `PdfDocumentRedactions.Apply` /
+`ApplyWithEvidence` facade despite both types remaining `internal`. It is **not** moot for
+text editing; it is precisely what a caller would need to build glyph-preserving editing
+outside the library.
+
+But there is a better-shaped request, and it should be filed instead: **route
+`PdfTextEditor` through `PdfContentStreamTextRewriter` as well, and give `PdfStamper` a way
+to stamp in an existing embedded font.** The machinery already exists, has one caller, and
+was written by the maintainer in the last fortnight. That is a "please extend this to the
+adjacent path" request rather than an architecture argument — the kind most likely to be
+accepted, and the only remaining thing standing between this project and an AGPL-free
+dependency graph.
+
+---
+
+## Update 1 — the blocking finding was fixed in then-unreleased `master`
+
+_Superseded by Update 2 above on the release-status question; retained because the
+code-reading is still accurate._
+
+Everything below analyses `OfficeIMO.Pdf` **3.3.0** (release `OfficeIMO-v20260902190744`,
+commit `bd9e881f`). That analysis stands for that package.
+
+At the time this was written, `master` had picked up ~33 commits that fix the core blocker:
 
 - **Glyph-level redaction** — new `PdfContentStreamTextRewriter.cs` (commit `6a384161`,
   "Preserve unaffected PDF glyphs during redaction"). `TrySplitGlyphs` splits encoded
@@ -41,10 +124,10 @@ Since it was written, `master` has picked up ~33 commits that fix the core block
   **typed action sanitization**, and **combined before-sharing sanitization** also
   landed — see [`officeimo-issues-to-file.md`](officeimo-issues-to-file.md).
 
-**None of this is published.** Latest NuGet remains 3.3.0. So the verdict changes from
-*"blocked at the core"* to *"blocked pending a release"* — a capability question has
-become a timing question. Re-validate against the first published version that contains
-it, using our own fixtures, rather than trusting commit messages or this summary.
+**None of this was published at the time of writing** — latest NuGet was then 3.3.0 — so
+the verdict moved from *"blocked at the core"* to *"blocked pending a release."*
+**Update 2 supersedes this:** the release shipped as 3.4.0 on 2026-09-06, and the
+remaining gap is text-editing font fidelity rather than redaction granularity.
 
 One caveat cuts the other way: redaction internals were substantially rewritten inside
 24 hours. That responsiveness is a real asset, but it reinforces the churn note at the
@@ -260,17 +343,20 @@ text), `OcrTool` (Tesseract; but see the invisible-text finding), `UrlClassifier
 1. **Phase 0 — build the seam (#116). Unchanged, and still worth doing on its own.**
    It isolates the iText surface, makes the tools testable against fakes, and is the
    only way to migrate the 🟢 majority without a big-bang rewrite.
-2. **Don't migrate against 3.3.0 — and don't build against `master` either.** The
-   shipped package still has the whole-line blast radius, the width-provider bug and
-   the OCR rejection. Tracking an unreleased branch for a security-critical guarantee
-   is the wrong trade, however good the fixes look.
-3. **Watch for the next published release above 3.3.0**, then validate it against our
-   own fixtures before trusting it: redact a word mid-line and assert the rest of the
-   line survives *in its original font*; redact a partially-overlapping run and assert
-   no reflow; redact on an OCR'd searchable scan; confirm `Plan()` and `Apply()` agree
-   on geometry. That is the spike #115 always asked for, now with a much better prior.
-4. **File only what's left.** Six of the seven drafted upstream issues are already
-   fixed on `master`; only the per-field form JavaScript question remains
+2. ~~**Don't migrate against 3.3.0 — and don't build against `master` either.**~~
+   **Superseded.** The fixes are published: pin `OfficeIMO.Pdf` **3.4.3** (or later) for
+   any spike. 3.3.0 does still have the whole-line blast radius, the width-provider bug
+   and the OCR rejection — do not evaluate against it.
+3. **Run the spike, now, against 3.4.3.** It is no longer hypothetical and it is the
+   thing that turns this argument into a number. Redact a word mid-line and assert the
+   rest of the line survives *in its original font*; redact a partially-overlapping run
+   and assert no reflow; redact on an OCR'd searchable scan; confirm `Plan()` and
+   `Apply()` agree on geometry. Add one case this document did not previously call for:
+   **edit** a word set in an embedded font and assert what comes back — that is the case
+   expected to fail, and the size of that failure is now the deciding number.
+4. **File the sharpened ask** — route `PdfTextEditor` through
+   `PdfContentStreamTextRewriter`, and support stamping in an existing embedded font —
+   alongside the per-field form JavaScript question, which is still outstanding
    ([`docs/officeimo-issues-to-file.md`](officeimo-issues-to-file.md)).
 5. **Adopt one idea regardless of the outcome:** a post-redaction residue assertion in
    the spirit of `Redactions.Verify`. This project makes a removal guarantee (#48) and
@@ -283,7 +369,8 @@ text), `OcrTool` (Tesseract; but see the invisible-text finding), `UrlClassifier
   from a judgement call about quality), but the *severity* estimates — how often a
   producer emits multi-line text objects, whether the half-em width approximation ever
   causes under-redaction — deserve a compiled test before anyone acts on them.
-- Everything here describes `OfficeIMO.Pdf` 3.3.0 / `master` at `aba60b7b`. This is a
+- The body of this document describes `OfficeIMO.Pdf` 3.3.0 / `master` at `aba60b7b`;
+  Update 2 describes the shipped 3.4.3 (`OfficeIMO-v20260912151212`). This is a
   fast-moving library (3.2.x → 3.3.0 moved several public engine classes to `internal`
   per its `MIGRATION.md`); re-check before relying on any specific API shape.
 - The flip side of that churn is a maintenance consideration this project should weigh
