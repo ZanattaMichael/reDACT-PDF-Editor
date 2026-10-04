@@ -15,6 +15,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Adobe's Core 14 font metrics and glyph lists, used to measure and decode text in the
+         standard fonts. Distributed unmodified, with Adobe's MustRead.html as its licence requires. -->
+    <EmbeddedResource Include="Pdf/Fonts/Resources/**/*" LogicalName="PdfEditor.Core.Fonts.%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="itext" Version="9.7.0" />
     <PackageReference Include="itext.bouncy-castle-adapter" Version="9.7.0" />
     <PackageReference Include="PDFtoImage" Version="5.2.1" />

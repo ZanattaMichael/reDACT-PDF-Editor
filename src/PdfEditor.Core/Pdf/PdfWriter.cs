@@ -1,0 +1,447 @@
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
+
+namespace PdfEditor.Core.Pdf;
+
+/// <summary>How a document is written.</summary>
+internal sealed record PdfSaveOptions
+{
+    /// <summary>When set, the output is encrypted with AES-256 (revision 6) under these passwords.</summary>
+    public (string User, string Owner)? Encryption { get; init; }
+
+    /// <summary>Stamp /ModDate and /Producer into the Info dictionary (what every editor does on save).</summary>
+    public bool StampInfo { get; init; } = true;
+}
+
+/// <summary>
+/// Text the serialiser copies verbatim — used only for the placeholders a signature patches
+/// once the bytes around them are fixed.
+/// </summary>
+internal sealed class PdfLiteral : PdfObject
+{
+    public string Text { get; }
+    public PdfLiteral(string text) => Text = text;
+}
+
+internal sealed partial class PdfDocument
+{
+    /// <summary>The producer string stamped into documents this engine writes.</summary>
+    public const string ProducerName = "reDACT";
+
+    /// <summary>
+    /// Writes the whole document afresh: every object reachable from the trailer, renumbered
+    /// densely, with a classic cross-reference table. Objects nothing refers to are not written —
+    /// which is what makes deleting a page or an annotation actually remove its bytes. The output
+    /// is unencrypted unless <see cref="PdfSaveOptions.Encryption"/> asks otherwise.
+    /// </summary>
+    public byte[] Save(PdfSaveOptions? options = null)
+    {
+        options ??= new PdfSaveOptions();
+        var catalog = Catalog ?? throw new PdfFormatException("The document has no catalog to write.");
+
+        PdfSecurityHandler? security = null;
+        PdfDictionary? encryptDict = null;
+        if (options.Encryption is { } pw)
+        {
+            (security, encryptDict) = PdfSecurityHandler.CreateAes256(pw.User, pw.Owner);
+            // Revision 6 is ISO 32000-2's handler, published for 1.7 readers as Adobe extension level 8.
+            var extensions = catalog.GetAsDictionary(PdfName.Of("Extensions")) ?? new PdfDictionary();
+            var adbe = new PdfDictionary();
+            adbe.Put(PdfName.Of("BaseVersion"), PdfName.Of("1.7"));
+            adbe.Put(PdfName.Of("ExtensionLevel"), new PdfNumber(8));
+            extensions.Put(PdfName.Of("ADBE"), adbe);
+            catalog.Put(PdfName.Of("Extensions"), extensions);
+        }
+
+        if (options.StampInfo) StampInfo();
+
+        var trailer = new PdfDictionary();
+        trailer.Put(PdfName.Root, catalog);
+        if (Info is { } info) trailer.Put(PdfName.Info, info);
+        trailer.Put(PdfName.ID, NewId());
+        if (encryptDict != null) trailer.Put(PdfName.Encrypt, encryptDict);
+
+        var writer = new ObjectWriter(security);
+        if (encryptDict != null)
+        {
+            writer.Register(encryptDict);
+            writer.Unencrypted.Add(encryptDict);
+        }
+        writer.Register(catalog);
+        if (Info is { } infoDict) writer.Register(infoDict);
+
+        string version = encryptDict != null && string.CompareOrdinal(Version, "1.7") < 0 ? "1.7" : Version;
+        var output = new MemoryStream();
+        WriteAscii(output, $"%PDF-{version}\n%âãÏÓ\n");
+        var offsets = writer.WriteAll(output);
+
+        long xref = output.Position;
+        WriteAscii(output, $"xref\n0 {offsets.Count + 1}\n0000000000 65535 f\r\n");
+        foreach (var (_, offset) in offsets)
+            WriteAscii(output, offset.ToString("D10", CultureInfo.InvariantCulture) + " 00000 n\r\n");
+
+        trailer.Put(PdfName.Size, new PdfNumber(offsets.Count + 1));
+        WriteAscii(output, "trailer\n");
+        writer.WriteObject(output, trailer, 0, 0, encrypt: false, topLevel: true);
+        WriteAscii(output, $"\nstartxref\n{xref.ToString(CultureInfo.InvariantCulture)}\n%%EOF\n");
+        return output.ToArray();
+    }
+
+    /// <summary>Sets /ModDate and /Producer, and /CreationDate on a brand-new document.</summary>
+    private void StampInfo()
+    {
+        var info = GetOrCreateInfo();
+        var now = new PdfString(Encoding.ASCII.GetBytes(FormatDate(DateTimeOffset.Now)));
+        if (IsNew && !info.ContainsKey(PdfName.CreationDate)) info.Put(PdfName.CreationDate, now);
+        info.Put(PdfName.ModDate, new PdfString(now.Bytes));
+        info.Put(PdfName.Producer, PdfString.FromText(ProducerName));
+    }
+
+    /// <summary>A PDF date string (§7.9.4): <c>D:YYYYMMDDHHmmSS+HH'mm'</c>.</summary>
+    internal static string FormatDate(DateTimeOffset when)
+    {
+        var offset = when.Offset;
+        string sign = offset < TimeSpan.Zero ? "-" : "+";
+        offset = offset.Duration();
+        return "D:" + when.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture)
+            + $"{sign}{offset.Hours:D2}'{offset.Minutes:D2}'";
+    }
+
+    /// <summary>
+    /// The file identifier: the first half is kept from the source (it names the document across
+    /// revisions), the second is fresh (it names this revision).
+    /// </summary>
+    private PdfArray NewId()
+    {
+        byte[] fresh = RandomNumberGenerator.GetBytes(16);
+        byte[] first = Trailer.GetAsArray(PdfName.ID)?.GetAsString(0)?.Bytes is { Length: > 0 } existing ? existing : fresh;
+        return new PdfArray(new PdfObject[] { new PdfString(first, isHex: true), new PdfString(fresh, isHex: true) });
+    }
+
+    private static void WriteAscii(Stream output, string text)
+    {
+        var bytes = Encoding.Latin1.GetBytes(text);
+        output.Write(bytes, 0, bytes.Length);
+    }
+
+    // ------------------------------------------------------------------ incremental update
+
+    /// <summary>
+    /// Appends an incremental update to the original bytes (§7.5.6): <paramref name="changed"/>
+    /// are written under their existing object numbers, along with any new objects they reach,
+    /// and everything before is left byte-for-byte as it was — which is what keeps earlier digital
+    /// signatures valid. An encrypted source stays encrypted, in its own scheme.
+    /// </summary>
+    public byte[] SaveIncremental(IEnumerable<PdfObject> changed)
+    {
+        if (IsNew) throw new InvalidOperationException("Only a document opened from bytes can be updated incrementally.");
+        int prevXref = PreviousStartXref();
+        int originalLimit = _originalObjectLimit; // objects numbered from here on were added since opening
+
+        // Unchanged objects of the original are referred to, never rewritten; anything new is.
+        var changedSet = new HashSet<PdfObject>(changed, ReferenceEqualityComparer.Instance);
+        var writer = new ObjectWriter(_security, obj =>
+        {
+            bool original = obj.Reference is { } r && r.Owner == this && r.Number < originalLimit;
+            if (!original) MakeIndirect(obj);
+            var reference = obj.Reference!;
+            return (reference.Number, reference.Generation, Write: !original || changedSet.Contains(obj));
+        });
+        foreach (var obj in changedSet) writer.Register(obj);
+
+        var output = new MemoryStream();
+        output.Write(_data, 0, _data.Length);
+        if (_data.Length > 0 && _data[^1] != '\n') output.WriteByte((byte)'\n');
+        var offsets = writer.WriteAll(output);
+
+        int size = Math.Max(ObjectNumberLimit, offsets.Count == 0 ? 1 : offsets.Keys.Max() + 1);
+        var trailer = new PdfDictionary();
+        foreach (var key in new[] { PdfName.Root, PdfName.Info, PdfName.ID, PdfName.Encrypt })
+            if (Trailer.GetRaw(key) is { } value) trailer.Put(key, value);
+        trailer.Put(PdfName.Prev, new PdfNumber(prevXref));
+
+        long xrefOffset = output.Position;
+        if (PreviousSectionIsStream(prevXref))
+        {
+            WriteXrefStream(output, offsets, trailer, size, writer);
+        }
+        else
+        {
+            trailer.Put(PdfName.Size, new PdfNumber(size));
+            WriteAscii(output, "xref\n");
+            foreach (var (start, count) in Runs(offsets.Keys))
+            {
+                WriteAscii(output, $"{start} {count}\n");
+                for (int n = start; n < start + count; n++)
+                    WriteAscii(output, offsets[n].ToString("D10", CultureInfo.InvariantCulture) + " 00000 n\r\n");
+            }
+            WriteAscii(output, "trailer\n");
+            writer.WriteObject(output, trailer, 0, 0, encrypt: false, topLevel: true);
+        }
+        WriteAscii(output, $"\nstartxref\n{xrefOffset.ToString(CultureInfo.InvariantCulture)}\n%%EOF\n");
+        return output.ToArray();
+    }
+
+    private int PreviousStartXref()
+    {
+        int at = LastIndexOf(_data, "startxref"u8, Math.Max(0, _data.Length - 4096));
+        if (at < 0) at = LastIndexOf(_data, "startxref"u8, 0);
+        var lexer = new PdfLexer(_data, Math.Max(0, at + 9));
+        if (at < 0 || !lexer.Next() || lexer.TokenType != PdfTokenType.Number)
+            throw new PdfFormatException("The document has no usable startxref, so it cannot be updated incrementally.");
+        return (int)lexer.NumberValue;
+    }
+
+    private bool PreviousSectionIsStream(int offset)
+    {
+        if (offset <= 0 || offset >= _data.Length) return false;
+        var lexer = new PdfLexer(_data, offset);
+        lexer.SkipWhitespace();
+        return !lexer.MatchesKeywordAt(lexer.Position, "xref");
+    }
+
+    private static IEnumerable<(int Start, int Count)> Runs(IEnumerable<int> sortedNumbers)
+    {
+        int start = -1, count = 0;
+        foreach (int n in sortedNumbers)
+        {
+            if (start >= 0 && n == start + count) { count++; continue; }
+            if (start >= 0) yield return (start, count);
+            start = n;
+            count = 1;
+        }
+        if (start >= 0) yield return (start, count);
+    }
+
+    /// <summary>A cross-reference stream for the update, for sources whose own table is a stream.</summary>
+    private static void WriteXrefStream(Stream output, SortedDictionary<int, long> offsets, PdfDictionary trailer,
+        int size, ObjectWriter writer)
+    {
+        int xrefNumber = size; // the stream is itself an object of the update
+        offsets[xrefNumber] = output.Position;
+        var rows = new MemoryStream();
+        var index = new PdfArray();
+        foreach (var (start, count) in Runs(offsets.Keys))
+        {
+            index.Add(new PdfNumber(start));
+            index.Add(new PdfNumber(count));
+            for (int n = start; n < start + count; n++)
+            {
+                long off = offsets[n];
+                rows.WriteByte(1);
+                for (int k = 3; k >= 0; k--) rows.WriteByte((byte)(off >> (8 * k)));
+                rows.WriteByte(0);
+                rows.WriteByte(0);
+            }
+        }
+        var stream = new PdfStream(rows.ToArray(), compress: false);
+        foreach (var key in trailer.Keys) stream.Put(key, trailer.GetRaw(key));
+        stream.Put(PdfName.Type, PdfName.XRef);
+        stream.Put(PdfName.Size, new PdfNumber(size + 1));
+        stream.Put(PdfName.Index, index);
+        stream.Put(PdfName.W, new PdfArray(1, 4, 2));
+        writer.Unencrypted.Add(stream); // cross-reference streams are never encrypted
+        writer.WriteIndirect(output, stream, xrefNumber, 0);
+    }
+
+    /// <summary>
+    /// Serialises objects. Each indirect object is numbered the first time it is reached; a
+    /// stream that was never made indirect becomes indirect here, since streams cannot be direct.
+    /// </summary>
+    private sealed class ObjectWriter
+    {
+        private readonly PdfSecurityHandler? _security;
+        private readonly Dictionary<PdfObject, (int Number, int Generation)> _numbers = new(ReferenceEqualityComparer.Instance);
+        private readonly List<PdfObject> _queue = new();
+        private readonly Func<PdfObject, (int Number, int Generation, bool Write)>? _assign;
+
+        /// <summary>Objects whose strings and streams are written in the clear (the encryption dictionary).</summary>
+        public HashSet<PdfObject> Unencrypted { get; } = new(ReferenceEqualityComparer.Instance);
+
+        /// <param name="assign">
+        /// For incremental updates: the number an object keeps and whether it must be written.
+        /// Without it, objects are numbered densely in the order they are reached.
+        /// </param>
+        public ObjectWriter(PdfSecurityHandler? security,
+            Func<PdfObject, (int Number, int Generation, bool Write)>? assign = null)
+        {
+            _security = security;
+            _assign = assign;
+        }
+
+        /// <summary>Gives <paramref name="obj"/> its object number (once), queueing it if it must be written.</summary>
+        public (int Number, int Generation) Register(PdfObject obj)
+        {
+            if (_numbers.TryGetValue(obj, out var id)) return id;
+            if (_assign == null)
+            {
+                id = (_numbers.Count + 1, 0);
+                _queue.Add(obj);
+            }
+            else
+            {
+                var (number, generation, write) = _assign(obj);
+                id = (number, generation);
+                if (write) _queue.Add(obj);
+            }
+            _numbers[obj] = id;
+            return id;
+        }
+
+        /// <summary>Writes every queued object (and everything new they reach); returns offsets by number.</summary>
+        public SortedDictionary<int, long> WriteAll(Stream output)
+        {
+            var offsets = new SortedDictionary<int, long>();
+            for (int i = 0; i < _queue.Count; i++)
+            {
+                var obj = _queue[i];
+                var (number, generation) = _numbers[obj];
+                offsets[number] = output.Position;
+                WriteIndirect(output, obj, number, generation);
+            }
+            return offsets;
+        }
+
+        public void WriteIndirect(Stream output, PdfObject obj, int number, int generation)
+        {
+            WriteAscii(output, $"{number.ToString(CultureInfo.InvariantCulture)} {generation.ToString(CultureInfo.InvariantCulture)} obj\n");
+            bool encrypt = _security != null && !Unencrypted.Contains(obj);
+            if (obj is PdfStream stream)
+            {
+                byte[] data = encrypt && !stream.Is(PdfName.XRef)
+                    ? _security!.Encrypt(stream.RawData, number, generation, isStream: true)
+                    : stream.RawData;
+                var dict = new PdfDictionary();
+                foreach (var key in stream.Keys)
+                    if (!key.Equals(PdfName.Length)) dict.Put(key, stream.GetRaw(key));
+                dict.Put(PdfName.Length, new PdfNumber(data.Length));
+                WriteObject(output, dict, number, generation, encrypt, topLevel: true);
+                WriteAscii(output, "\nstream\n");
+                output.Write(data, 0, data.Length);
+                WriteAscii(output, "\nendstream");
+            }
+            else
+            {
+                WriteObject(output, obj, number, generation, encrypt, topLevel: true);
+            }
+            WriteAscii(output, "\nendobj\n");
+        }
+
+        public void WriteObject(Stream output, PdfObject obj, int number, int generation, bool encrypt,
+            bool topLevel, int depth = 0)
+        {
+            if (depth > PdfObjectParser.MaxNesting)
+                throw new PdfFormatException("The document nests objects too deeply to be written.");
+
+            if (!topLevel)
+            {
+                // A nested value that is an indirect object — or a stream, which must be — is
+                // written as a reference to it.
+                var target = PdfReference.Deref(obj);
+                if (obj is PdfReference && target is PdfNull)
+                {
+                    WriteAscii(output, "null");
+                    return;
+                }
+                if (obj is PdfReference || target.IsIndirect || target is PdfStream || _numbers.ContainsKey(target))
+                {
+                    var (n, g) = Register(target);
+                    WriteAscii(output, $"{n.ToString(CultureInfo.InvariantCulture)} {g.ToString(CultureInfo.InvariantCulture)} R");
+                    return;
+                }
+                obj = target;
+            }
+
+            switch (obj)
+            {
+                case PdfNull:
+                    WriteAscii(output, "null");
+                    break;
+                case PdfBoolean b:
+                    WriteAscii(output, b.Value ? "true" : "false");
+                    break;
+                case PdfNumber n:
+                    WriteAscii(output, n.IsInteger ? n.LongValue().ToString(CultureInfo.InvariantCulture) : PdfNumber.Format(n.Value));
+                    break;
+                case PdfString s:
+                    if (encrypt && _security != null)
+                        WriteString(output, _security.Encrypt(s.Bytes, number, generation, isStream: false), hex: true);
+                    else
+                        WriteString(output, s.Bytes, s.IsHex);
+                    break;
+                case PdfName name:
+                    WriteName(output, name);
+                    break;
+                case PdfLiteral literal:
+                    WriteAscii(output, literal.Text);
+                    break;
+                case PdfArray array:
+                    output.WriteByte((byte)'[');
+                    for (int i = 0; i < array.Count; i++)
+                    {
+                        if (i > 0) output.WriteByte((byte)' ');
+                        WriteObject(output, array.GetRaw(i), number, generation, encrypt, false, depth + 1);
+                    }
+                    output.WriteByte((byte)']');
+                    break;
+                case PdfDictionary dict:
+                    // A signature's /Contents is never encrypted: it signs the encrypted bytes.
+                    bool isSignature = dict.ContainsKey(PdfName.ByteRange) && dict.ContainsKey(PdfName.Contents);
+                    WriteAscii(output, "<<");
+                    foreach (var key in dict.Keys)
+                    {
+                        WriteName(output, key);
+                        output.WriteByte((byte)' ');
+                        bool encryptValue = encrypt && !(isSignature && key.Equals(PdfName.Contents));
+                        WriteObject(output, dict.GetRaw(key)!, number, generation, encryptValue, false, depth + 1);
+                    }
+                    WriteAscii(output, ">>");
+                    break;
+            }
+        }
+
+        private static void WriteString(Stream output, byte[] bytes, bool hex)
+        {
+            if (hex)
+            {
+                output.WriteByte((byte)'<');
+                WriteAscii(output, Convert.ToHexString(bytes));
+                output.WriteByte((byte)'>');
+                return;
+            }
+            output.WriteByte((byte)'(');
+            foreach (byte b in bytes)
+            {
+                switch (b)
+                {
+                    case (byte)'(':
+                    case (byte)')':
+                    case (byte)'\\':
+                        output.WriteByte((byte)'\\');
+                        output.WriteByte(b);
+                        break;
+                    case (byte)'\r':
+                        WriteAscii(output, "\\r"); // a raw CR would be read back as LF
+                        break;
+                    default:
+                        output.WriteByte(b);
+                        break;
+                }
+            }
+            output.WriteByte((byte)')');
+        }
+
+        internal static void WriteName(Stream output, PdfName name)
+        {
+            output.WriteByte((byte)'/');
+            foreach (byte b in Encoding.UTF8.GetBytes(name.Value))
+            {
+                if (b < 0x21 || b > 0x7E || b == '#' || PdfLexer.IsDelimiter(b))
+                    WriteAscii(output, "#" + b.ToString("X2", CultureInfo.InvariantCulture));
+                else
+                    output.WriteByte(b);
+            }
+        }
+    }
+}
