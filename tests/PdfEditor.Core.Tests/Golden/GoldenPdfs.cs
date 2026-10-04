@@ -7,12 +7,12 @@ namespace PdfEditor.Tests.Golden;
 /// <summary>
 /// The golden-file corpus (issue #53): documents whose structure is awkward in the ways real
 /// production PDFs are awkward, rather than the tidy ones <see cref="TestPdfs"/> builds through
-/// iText.
+/// the engine's high-level writer.
 /// <para>
 /// Every fixture is generated in-repo — nothing is downloaded, and nothing carries a licence.
 /// They are written byte by byte through <see cref="RawPdf"/> because the features that matter
 /// here (Type 3 glyph procedures, Identity-H composite fonts, <c>/ToUnicode</c> CMaps, luminosity
-/// soft masks, isolated/knockout transparency groups) either cannot be produced through iText's
+/// soft masks, isolated/knockout transparency groups) either cannot be produced through a
 /// high-level API at all or come out normalised into something less interesting. Writing the bytes
 /// also makes the corpus bit-for-bit reproducible, which
 /// <see cref="GoldenRegressionTests.Corpus_IsBitForBitReproducible"/> pins.
@@ -37,8 +37,8 @@ internal static class GoldenPdfs
     /// fail, or to produce a document the validator still complains about.
     /// </param>
     /// <param name="Reproducible">
-    /// False for the fixtures iText writes, whose bytes carry a timestamp-derived <c>/ID</c> and
-    /// <c>/ModDate</c> and therefore differ between two identical runs.
+    /// False for the fixtures the engine's writer produces, whose bytes carry a random <c>/ID</c>
+    /// and a <c>/ModDate</c> and therefore differ between two identical runs.
     /// </param>
     internal sealed record GoldenDoc(
         string Name, byte[] Bytes, bool WellFormed, bool Reproducible, string Description);

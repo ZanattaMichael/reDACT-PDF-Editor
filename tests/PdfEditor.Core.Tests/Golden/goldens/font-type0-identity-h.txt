@@ -16,7 +16,7 @@ page 1: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == redact ==
-bytes: ~2304
+bytes: ~2048
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -114,7 +114,7 @@ acroform: needAppearances=none fields=1
   field: name=(golden.added) type=Tx value=(filled) hasAppearance=yes
 validation: clean
 == sign-image ==
-bytes: ~2560
+bytes: ~2304
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -126,6 +126,6 @@ page 1: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
   ops: BTx2 Dox1 ETx2 Qx2 Tdx2 Tfx2 Tjx2 cmx1 gx1 qx2
   font C0: subtype=Type0 base=AAAAAA+DejaVuSans encoding=Identity-H toUnicode=yes widths=0 descendant=[subtype=CIDFontType2 base=AAAAAA+DejaVuSans toUnicode=no widths=0 embedded=no]
   font F1: subtype=Type1 base=Helvetica toUnicode=no widths=0
-  xobject Im1: subtype=Image size=24x12 cs=/DeviceRGB bpc=8 filter=/FlateDecode smask=yes mask=no
+  xobject Im1: subtype=Image size=24x12 cs=/DeviceRGB bpc=8 filter=/FlateDecode smask=no mask=no
 acroform: none
 validation: clean

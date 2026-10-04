@@ -175,9 +175,9 @@ public class ContentStreamEditorCoverageTests
     [Fact]
     public void TjArrayWithEmptyString_StillSurgicallyRemovesOnlyTheHitWord()
     {
-        // A zero-length string in the array still fires its own render event in this
-        // iText version, so the per-glyph path (not the encoding-mismatch fallback)
-        // handles it — and does so correctly, leaving the untouched word intact.
+        // A zero-length string in the array still produces its own (empty) text run, so the
+        // per-glyph path (not the encoding-mismatch fallback) handles it — and does so
+        // correctly, leaving the untouched word intact.
         byte[] pdf = TestPdfs.WithTjArrayContainingEmptyString("Alpha", "Bravo", 72, 700, 14);
         var match = Assert.Single(TextTools.FindText(pdf, "Alpha"));
 
@@ -196,14 +196,11 @@ public class ContentStreamEditorCoverageTests
     {
         byte[] pdf = TestPdfs.WithDanglingXObjectReference("visible text", 72, 700, 14);
 
-        // A dangling "/Ghost Do" is invalid PDF regardless of our redactor — even iText's
-        // own generic text extractor can't process a page that references it, so
-        // verification reads the page's raw content bytes directly rather than going
-        // through PdfTextExtractor.
+        // A dangling "/Ghost Do" is invalid PDF regardless of our redactor, so verification
+        // reads the page's raw content bytes directly rather than going through extraction.
         var result = Redactor.Redact(pdf, new[] { new RectRegion(1, 0, 0, 10, 10) });
 
-        using var doc = new iText.Kernel.Pdf.PdfDocument(new iText.Kernel.Pdf.PdfReader(new MemoryStream(result.Pdf)));
-        byte[] content = doc.GetPage(1).GetContentBytes();
+        byte[] content = PdfEditor.Core.Pdf.PdfDocument.Open(result.Pdf).GetPage(1).GetContentBytes();
         Assert.Contains("visible text", System.Text.Encoding.ASCII.GetString(content));
     }
 

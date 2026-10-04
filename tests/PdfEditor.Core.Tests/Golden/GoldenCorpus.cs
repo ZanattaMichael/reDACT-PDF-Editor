@@ -34,8 +34,8 @@ internal static class GoldenCorpus
     /// skips them and only the recorded projection holds their behaviour in place.
     /// </para>
     /// <para>
-    /// <c>Reproducible: false</c> marks the ones iText writes, whose bytes carry a
-    /// timestamp-derived <c>/ID</c> and <c>/ModDate</c>; they are excluded from the pinned corpus
+    /// <c>Reproducible: false</c> marks the ones the engine's writer produces, whose bytes
+    /// carry a <c>/ModDate</c> and a random <c>/ID</c>; they are excluded from the pinned corpus
     /// hash for that reason, and are the direct evidence for why the goldens are projections
     /// rather than bytes.
     /// </para>
@@ -67,8 +67,8 @@ internal static class GoldenCorpus
         // ---- nested XObjects: already covered elsewhere, pulled in rather than rewritten ----
         new("nested-forms-raw-4", RawPdf.DeeplyNestedForms(4), true, true,
             "Four hand-written form XObjects, each drawing the next (#54's fixture)."),
-        new("nested-forms-itext-3", TestPdfs.WithNestedForms(3, 60, 400, 200, 120), true, false,
-            "iText-built nested form XObjects (TestPdfs)."),
+        new("nested-forms-engine-3", TestPdfs.WithNestedForms(3, 60, 400, 200, 120), true, false,
+            "Engine-built nested form XObjects (TestPdfs)."),
 
         // ---- malformed streams: likewise ----
         new("stream-wrong-length", CorruptPdfs.WrongStreamLength(), false, true,

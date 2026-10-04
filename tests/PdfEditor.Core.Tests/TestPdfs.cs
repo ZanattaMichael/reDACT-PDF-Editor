@@ -1,19 +1,53 @@
 using System.Globalization;
 using System.Text;
-using iText.Forms;
-using iText.Forms.Fields;
-using iText.IO.Font.Constants;
-using iText.IO.Image;
-using iText.Kernel.Font;
-using iText.Kernel.Geom;
-using iText.Kernel.Pdf;
-using iText.Kernel.Pdf.Annot;
-using iText.Kernel.Pdf.Action;
-using iText.Kernel.Pdf.Canvas;
-using iText.Kernel.Pdf.Xobject;
+using PdfEditor.Core.Pdf;
+using PdfEditor.Core.Pdf.Fonts;
 using SkiaSharp;
 
 namespace PdfEditor.Tests;
+
+/// <summary>A page under construction, for building test fixtures with the engine.</summary>
+internal sealed class FixturePage
+{
+    public FixturePage(PdfDocument doc, PdfPage page)
+    {
+        Doc = doc;
+        Page = page;
+    }
+
+    public PdfDocument Doc { get; }
+    public PdfPage Page { get; }
+    public ContentBuilder Content { get; } = new();
+
+    /// <summary>Registers a standard-14 font on the page and returns its resource name.</summary>
+    public PdfName Font(string name = StandardFonts.Helvetica) =>
+        PdfResources.Add(Page.GetOrCreateResources(), PdfName.Font, "F", Doc.MakeIndirect(PdfFont.Standard(name).Dictionary!));
+
+    /// <summary>Shows one line of text (WinAnsi-encoded) at a baseline position.</summary>
+    public FixturePage Text(string text, float x, float y, float size, string font = StandardFonts.Helvetica, int renderMode = 0)
+    {
+        var name = Font(font);
+        Content.BeginText().Font(name, size);
+        if (renderMode != 0) Content.TextRenderingMode(renderMode);
+        Content.MoveText(x, y).ShowText(PdfFont.Standard(font).Encode(text)).EndText();
+        return this;
+    }
+
+    /// <summary>Draws an encoded image (PNG/JPEG) into the rectangle.</summary>
+    public FixturePage Image(byte[] encoded, float x, float y, float width, float height)
+    {
+        var (image, _, _) = PdfImages.CreateXObject(encoded);
+        var name = PdfResources.Add(Page.GetOrCreateResources(), PdfName.XObject, "Im", image);
+        Content.SaveState().Transform(width, 0, 0, height, x, y).DrawXObject(name).RestoreState();
+        return this;
+    }
+
+    /// <summary>Writes the accumulated drawing into the page as one more content stream.</summary>
+    public void Flush()
+    {
+        if (!Content.IsEmpty) Page.AppendContent(Content.ToArray());
+    }
+}
 
 /// <summary>Builds small, deterministic PDFs for tests.</summary>
 public static class TestPdfs
@@ -21,23 +55,34 @@ public static class TestPdfs
     public const float PageWidth = 595;   // A4 in points
     public const float PageHeight = 842;
 
-    /// <summary>A single page with absolutely positioned text lines.</summary>
-    public static byte[] WithText(params (string Text, float X, float Y, float Size)[] lines)
+    /// <summary>Builds a document of <paramref name="pages"/> A4 pages, each drawn by <paramref name="draw"/>.</summary>
+    internal static byte[] Build(int pages, Action<FixturePage, int> draw)
     {
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
+        var doc = PdfDocument.CreateNew();
+        for (int i = 1; i <= pages; i++)
         {
-            var page = doc.AddNewPage(new PageSize(PageWidth, PageHeight));
-            var canvas = new PdfCanvas(page);
-            var font = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
-            foreach (var (text, x, y, size) in lines)
-            {
-                canvas.BeginText().SetFontAndSize(font, size)
-                    .MoveText(x, y).ShowText(text).EndText();
-            }
+            var page = new FixturePage(doc, doc.AddNewPage(PageWidth, PageHeight));
+            draw(page, i);
+            page.Flush();
         }
-        return output.ToArray();
+        return doc.Save();
     }
+
+    internal static byte[] Build(Action<FixturePage> draw) => Build(1, (p, _) => draw(p));
+
+    private static byte[] SolidPng(int width, int height, SKColor colour)
+    {
+        using var bitmap = new SKBitmap(width, height);
+        using (var c = new SKCanvas(bitmap)) c.Clear(colour);
+        using var img = SKImage.FromBitmap(bitmap);
+        return img.Encode(SKEncodedImageFormat.Png, 100).ToArray();
+    }
+
+    /// <summary>A single page with absolutely positioned text lines.</summary>
+    public static byte[] WithText(params (string Text, float X, float Y, float Size)[] lines) => Build(p =>
+    {
+        foreach (var (text, x, y, size) in lines) p.Text(text, x, y, size);
+    });
 
     /// <summary>
     /// A single page holding one line of text set in a named standard-14 font at a known size.
@@ -45,57 +90,18 @@ public static class TestPdfs
     /// in to be ground truth they can assert against.
     /// </summary>
     public static byte[] WithTextInFont(string standardFontName, string text, float size,
-        float x = 72, float y = 700)
-    {
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
-        {
-            var page = doc.AddNewPage(new PageSize(PageWidth, PageHeight));
-            new PdfCanvas(page).BeginText()
-                .SetFontAndSize(PdfFontFactory.CreateFont(standardFontName), size)
-                .MoveText(x, y).ShowText(text).EndText();
-        }
-        return output.ToArray();
-    }
+        float x = 72, float y = 700) => Build(p => p.Text(text, x, y, size, standardFontName));
 
     /// <summary>A document with the given number of pages, each labelled.</summary>
-    public static byte[] MultiPage(int pages, string labelPrefix = "Page")
-    {
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
-        {
-            var font = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
-            for (int i = 1; i <= pages; i++)
-            {
-                var page = doc.AddNewPage(new PageSize(PageWidth, PageHeight));
-                new PdfCanvas(page).BeginText().SetFontAndSize(font, 14)
-                    .MoveText(72, 770).ShowText($"{labelPrefix} {i}").EndText();
-            }
-        }
-        return output.ToArray();
-    }
+    public static byte[] MultiPage(int pages, string labelPrefix = "Page") =>
+        Build(pages, (p, i) => p.Text($"{labelPrefix} {i}", 72, 770, 14));
 
     /// <summary>A page with a solid-colour raster image drawn into the given rectangle.</summary>
-    public static byte[] WithImage(float x, float y, float width, float height)
+    public static byte[] WithImage(float x, float y, float width, float height) => Build(p =>
     {
-        using var bitmap = new SKBitmap(60, 40);
-        using (var c = new SKCanvas(bitmap)) c.Clear(SKColors.Red);
-        using var img = SKImage.FromBitmap(bitmap);
-        byte[] png = img.Encode(SKEncodedImageFormat.Png, 100).ToArray();
-
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
-        {
-            var page = doc.AddNewPage(new PageSize(PageWidth, PageHeight));
-            var canvas = new PdfCanvas(page);
-            canvas.AddImageFittedIntoRectangle(ImageDataFactory.Create(png),
-                new Rectangle(x, y, width, height), false);
-            var font = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
-            canvas.BeginText().SetFontAndSize(font, 12)
-                .MoveText(72, 800).ShowText("Document with image").EndText();
-        }
-        return output.ToArray();
-    }
+        p.Image(SolidPng(60, 40, SKColors.Red), x, y, width, height);
+        p.Text("Document with image", 72, 800, 12);
+    });
 
     /// <summary>
     /// Text drawn on top of a solid-red image — the ordinary shape of a document with a
@@ -103,28 +109,13 @@ public static class TestPdfs
     /// touching a region that overlaps the image, so this is the fixture that shows whether an
     /// edit disturbs the artwork underneath it.
     /// </summary>
-    public static byte[] WithTextOverImage(string text, float x, float y, float size)
+    public static byte[] WithTextOverImage(string text, float x, float y, float size) => Build(p =>
     {
-        using var bitmap = new SKBitmap(120, 80);
-        using (var c = new SKCanvas(bitmap)) c.Clear(SKColors.Red);
-        using var img = SKImage.FromBitmap(bitmap);
-        byte[] png = img.Encode(SKEncodedImageFormat.Png, 100).ToArray();
-
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
-        {
-            var page = doc.AddNewPage(new PageSize(PageWidth, PageHeight));
-            var canvas = new PdfCanvas(page);
-            // The image spans the whole band the text sits in, so any region around the text is
-            // necessarily inside the image too.
-            canvas.AddImageFittedIntoRectangle(ImageDataFactory.Create(png),
-                new Rectangle(x - 40, y - 40, 300, 140), false);
-            var font = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
-            canvas.BeginText().SetFontAndSize(font, size)
-                .MoveText(x, y).ShowText(text).EndText();
-        }
-        return output.ToArray();
-    }
+        // The image spans the whole band the text sits in, so any region around the text is
+        // necessarily inside the image too.
+        p.Image(SolidPng(120, 80, SKColors.Red), x - 40, y - 40, 300, 140);
+        p.Text(text, x, y, size);
+    });
 
     /// <summary>
     /// A <em>searchable</em> scan, the shape OCR leaves behind: the words are pixels in a page
@@ -145,23 +136,16 @@ public static class TestPdfs
         using var image = SKImage.FromBitmap(bitmap);
         byte[] png = image.Encode(SKEncodedImageFormat.Png, 100).ToArray();
 
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
+        return Build(p =>
         {
-            var page = doc.AddNewPage(new PageSize(PageWidth, PageHeight));
-            var canvas = new PdfCanvas(page);
             // The 600x100 bitmap is drawn at half scale, so its 48px type lands as 24pt and its
             // baseline (bitmap y=60) lands 20pt up from the image's bottom edge. Placing the image
             // from that baseline keeps the invisible layer sitting on the scanned words, the way
             // real OCR output does — a layer offset from the pixels it describes would make this
             // fixture prove nothing.
-            canvas.AddImageFittedIntoRectangle(ImageDataFactory.Create(png),
-                new Rectangle(x - 5, y - 20, 300, 50), false);
-            var font = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
-            canvas.BeginText().SetFontAndSize(font, size).SetTextRenderingMode(3)
-                .MoveText(x, y).ShowText(words).EndText();
-        }
-        return output.ToArray();
+            p.Image(png, x - 5, y - 20, 300, 50);
+            p.Text(words, x, y, size, renderMode: 3);
+        });
     }
 
     /// <summary>
@@ -181,23 +165,10 @@ public static class TestPdfs
         }
         using var image = SKImage.FromBitmap(bitmap);
         byte[] jpeg = image.Encode(SKEncodedImageFormat.Jpeg, 85).ToArray();
-
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
-        {
-            var page = doc.AddNewPage(new PageSize(PageWidth, PageHeight));
-            new PdfCanvas(page).AddImageFittedIntoRectangle(ImageDataFactory.Create(jpeg),
-                new Rectangle(0, 0, PageWidth, PageHeight), false);
-        }
-        return output.ToArray();
+        return Build(p => p.Image(jpeg, 0, 0, PageWidth, PageHeight));
     }
 
-    /// <summary>
-    /// A page with a solid blue square drawn as a genuine inline (BI/ID/EI) image. iText's
-    /// canvas API has no high-level method that reliably emits BI/ID/EI (its "asInline"
-    /// flag on AddImageFittedIntoRectangle still emits a Do-based XObject in this version),
-    /// so the content stream is written by hand, raw pixel bytes included.
-    /// </summary>
+    /// <summary>A page with a solid blue square drawn as a genuine inline (BI/ID/EI) image.</summary>
     public static byte[] WithInlineImage(float x, float y, float width, float height)
     {
         const int size = 20;
@@ -205,232 +176,160 @@ public static class TestPdfs
         for (int i = 0; i < pixels.Length; i += 3)
             pixels[i + 2] = 255; // solid blue (R=0, G=0, B=255)
 
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
+        return Build(p =>
         {
-            var page = doc.AddNewPage(new PageSize(PageWidth, PageHeight));
-            var font = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
-            var fontName = page.GetResources().AddFont(doc, font).GetValue();
+            var inline = new PdfDictionary();
+            inline.Put(PdfName.Of("W"), new PdfNumber(size));
+            inline.Put(PdfName.Of("H"), new PdfNumber(size));
+            inline.Put(PdfName.Of("CS"), PdfName.Of("RGB"));
+            inline.Put(PdfName.Of("BPC"), new PdfNumber(8));
+            p.Content.SaveState().Transform(width, 0, 0, height, x, y)
+                .Operation(new ContentOperation("BI", new List<PdfObject>()) { InlineImageDictionary = inline, InlineImageData = pixels })
+                .RestoreState();
+            p.Text("Document with inline image", 72, 800, 12);
+        });
+    }
 
-            using var content = new MemoryStream();
-            void Write(string s) => content.Write(Encoding.ASCII.GetBytes(s));
-            Write("q\n");
-            Write($"{width} 0 0 {height} {x} {y} cm\n");
-            Write($"BI\n/W {size}\n/H {size}\n/CS /RGB\n/BPC 8\nID\n");
-            content.Write(pixels);
-            Write("\nEI\nQ\n");
-            Write($"BT /{fontName} 12 Tf 72 800 Td (Document with inline image) Tj ET");
+    /// <summary>A form XObject showing <paramref name="text"/>, its bounding box width x height.</summary>
+    private static PdfStream FormWithText(FixturePage p, string text, float width, float height, float size, float tx, float ty)
+    {
+        var resources = new PdfDictionary();
+        var font = PdfResources.Add(resources, PdfName.Font, "F", p.Doc.MakeIndirect(PdfFont.Standard(StandardFonts.Helvetica).Dictionary!));
+        var content = new ContentBuilder().BeginText().Font(font, size).MoveText(tx, ty)
+            .ShowText(PdfFont.Standard(StandardFonts.Helvetica).Encode(text)).EndText();
+        return Form(p, content.ToArray(), resources, width, height);
+    }
 
-            page.GetPdfObject().Put(PdfName.Contents,
-                (PdfStream)new PdfStream(content.ToArray()).MakeIndirect(doc));
-        }
-        return output.ToArray();
+    private static PdfStream Form(FixturePage p, byte[] content, PdfDictionary resources, float width, float height)
+    {
+        var form = new PdfStream(content);
+        form.Put(PdfName.Type, PdfName.XObject);
+        form.Put(PdfName.Subtype, PdfName.Form);
+        form.Put(PdfName.BBox, new PdfArray(0, 0, width, height));
+        form.Put(PdfName.Resources, resources);
+        return p.Doc.MakeIndirect(form);
+    }
+
+    private static void DrawForm(FixturePage p, PdfStream form, float x, float y)
+    {
+        var name = PdfResources.Add(p.Page.GetOrCreateResources(), PdfName.XObject, "Fm", form);
+        p.Content.SaveState().Transform(1, 0, 0, 1, x, y).DrawXObject(name).RestoreState();
     }
 
     /// <summary>
     /// A page that draws a form XObject at (x, y) whose own content shows <paramref name="formText"/>.
     /// The form's bounding box occupies exactly the given width/height in page space.
     /// </summary>
-    public static byte[] WithForm(string formText, float x, float y, float width, float height)
+    public static byte[] WithForm(string formText, float x, float y, float width, float height) => Build(p =>
     {
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
-        {
-            var page = doc.AddNewPage(new PageSize(PageWidth, PageHeight));
-            var font = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
-            var form = new PdfFormXObject(new Rectangle(0, 0, width, height));
-            new PdfCanvas(form, doc).BeginText().SetFontAndSize(font, 14)
-                .MoveText(4, height / 2 - 5).ShowText(formText).EndText();
-            new PdfCanvas(page).AddXObjectAt(form, x, y);
-            new PdfCanvas(page).BeginText().SetFontAndSize(font, 12)
-                .MoveText(72, 800).ShowText("Document with a form").EndText();
-        }
-        return output.ToArray();
-    }
+        DrawForm(p, FormWithText(p, formText, width, height, 14, 4, height / 2 - 5), x, y);
+        p.Text("Document with a form", 72, 800, 12);
+    });
 
     /// <summary>
     /// A chain of <paramref name="depth"/> nested form XObjects, each drawing the next via Do,
     /// all sharing the same bounding box in page space — used to exercise the recursion
     /// depth guard in <c>ContentStreamEditor</c>.
     /// </summary>
-    public static byte[] WithNestedForms(int depth, float x, float y, float width, float height)
+    public static byte[] WithNestedForms(int depth, float x, float y, float width, float height) => Build(p =>
     {
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
+        PdfStream? previous = null;
+        for (int level = depth; level >= 1; level--)
         {
-            var page = doc.AddNewPage(new PageSize(PageWidth, PageHeight));
-            var font = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
-
-            PdfFormXObject? previous = null;
-            for (int level = depth; level >= 1; level--)
+            if (previous == null)
             {
-                var form = new PdfFormXObject(new Rectangle(0, 0, width, height));
-                var formCanvas = new PdfCanvas(form, doc);
-                if (previous == null)
-                    formCanvas.BeginText().SetFontAndSize(font, 10)
-                        .MoveText(2, 2).ShowText("innermost").EndText();
-                else
-                    formCanvas.AddXObjectAt(previous, 0, 0);
-                previous = form;
+                previous = FormWithText(p, "innermost", width, height, 10, 2, 2);
+                continue;
             }
-            new PdfCanvas(page).AddXObjectAt(previous!, x, y);
-            new PdfCanvas(page).BeginText().SetFontAndSize(font, 12)
-                .MoveText(72, 800).ShowText("Document with nested forms").EndText();
+            var resources = new PdfDictionary();
+            var inner = PdfResources.Add(resources, PdfName.XObject, "Fm", previous);
+            var content = new ContentBuilder().SaveState().DrawXObject(inner).RestoreState();
+            previous = Form(p, content.ToArray(), resources, width, height);
         }
-        return output.ToArray();
-    }
+        DrawForm(p, previous!, x, y);
+        p.Text("Document with nested forms", 72, 800, 12);
+    });
+
+    private static string Escape(string s) => s.Replace("\\", "\\\\").Replace("(", "\\(").Replace(")", "\\)");
+
+    /// <summary>A page whose content stream is written by hand, with Helvetica registered as the given name.</summary>
+    private static byte[] RawContent(Func<string, string> content) => Build(p =>
+    {
+        var font = p.Font().Value;
+        p.Content.Raw(content(font));
+    });
 
     /// <summary>
     /// A page whose content stream is written by hand so it can use the low-level
-    /// <c>'</c> and <c>"</c> text-showing operators, which iText's canvas API does not expose.
+    /// <c>'</c> and <c>"</c> text-showing operators.
     /// </summary>
-    public static byte[] WithQuoteOperators(string firstLine, string secondLine, string thirdLine)
-    {
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
-        {
-            var page = doc.AddNewPage(new PageSize(PageWidth, PageHeight));
-            var font = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
-            var fontName = page.GetResources().AddFont(doc, font);
-
-            string Escape(string s) => s.Replace("\\", "\\\\").Replace("(", "\\(").Replace(")", "\\)");
-            string content =
-                $"BT\n/{fontName.GetValue()} 12 Tf\n14 TL\n72 700 Td\n" +
-                $"({Escape(firstLine)}) Tj\n" +
-                $"({Escape(secondLine)}) '\n" +
-                $"0 0 ({Escape(thirdLine)}) \"\n" +
-                "ET";
-            page.GetPdfObject().Put(PdfName.Contents,
-                (PdfStream)new PdfStream(Encoding.ASCII.GetBytes(content)).MakeIndirect(doc));
-        }
-        return output.ToArray();
-    }
+    public static byte[] WithQuoteOperators(string firstLine, string secondLine, string thirdLine) =>
+        RawContent(font =>
+            $"BT\n/{font} 12 Tf\n14 TL\n72 700 Td\n" +
+            $"({Escape(firstLine)}) Tj\n" +
+            $"({Escape(secondLine)}) '\n" +
+            $"0 0 ({Escape(thirdLine)}) \"\n" +
+            "ET");
 
     /// <summary>
     /// A page whose content stream shows two strings via a single low-level <c>TJ</c>
     /// operator (an explicit array of string/number operands), with a real kerning
-    /// number between them. iText's high-level canvas API rarely emits <c>TJ</c> for
-    /// simple text, so this is written by hand.
+    /// number between them.
     /// </summary>
-    public static byte[] WithTjArray(string first, string second, float x, float y, float size)
-    {
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
-        {
-            var page = doc.AddNewPage(new PageSize(PageWidth, PageHeight));
-            var font = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
-            var fontName = page.GetResources().AddFont(doc, font).GetValue();
-
-            string Escape(string s) => s.Replace("\\", "\\\\").Replace("(", "\\(").Replace(")", "\\)");
-            string content =
-                $"BT\n/{fontName} {size} Tf\n{x} {y} Td\n" +
-                $"[({Escape(first)}) -250 ({Escape(second)})] TJ\nET";
-            page.GetPdfObject().Put(PdfName.Contents,
-                (PdfStream)new PdfStream(Encoding.ASCII.GetBytes(content)).MakeIndirect(doc));
-        }
-        return output.ToArray();
-    }
+    public static byte[] WithTjArray(string first, string second, float x, float y, float size) =>
+        RawContent(font => string.Create(CultureInfo.InvariantCulture,
+            $"BT\n/{font} {size} Tf\n{x} {y} Td\n[({Escape(first)}) -250 ({Escape(second)})] TJ\nET"));
 
     /// <summary>
     /// A page whose content stream shows a <c>TJ</c> array containing an empty string
-    /// alongside two real words. Some renderers (including iText's own event source)
-    /// never fire a text-render event for a zero-length string, which makes the number
-    /// of render events disagree with the number of string operands in the array — the
-    /// scenario <c>ContentStreamEditor</c>'s encoding-mismatch fallback guards against.
+    /// alongside two real words — the scenario <c>ContentStreamEditor</c>'s encoding-mismatch
+    /// fallback guards against.
     /// </summary>
-    public static byte[] WithTjArrayContainingEmptyString(string first, string second, float x, float y, float size)
-    {
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
-        {
-            var page = doc.AddNewPage(new PageSize(PageWidth, PageHeight));
-            var font = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
-            var fontName = page.GetResources().AddFont(doc, font).GetValue();
-
-            string Escape(string s) => s.Replace("\\", "\\\\").Replace("(", "\\(").Replace(")", "\\)");
-            string content =
-                $"BT\n/{fontName} {size} Tf\n{x} {y} Td\n" +
-                $"[({Escape(first)}) -200 () -200 ({Escape(second)})] TJ\nET";
-            page.GetPdfObject().Put(PdfName.Contents,
-                (PdfStream)new PdfStream(Encoding.ASCII.GetBytes(content)).MakeIndirect(doc));
-        }
-        return output.ToArray();
-    }
+    public static byte[] WithTjArrayContainingEmptyString(string first, string second, float x, float y, float size) =>
+        RawContent(font => string.Create(CultureInfo.InvariantCulture,
+            $"BT\n/{font} {size} Tf\n{x} {y} Td\n[({Escape(first)}) -200 () -200 ({Escape(second)})] TJ\nET"));
 
     /// <summary>A page whose content stream calls <c>Do</c> for an XObject name that is not
     /// registered in the page's resources at all (a dangling/invalid reference).</summary>
-    public static byte[] WithDanglingXObjectReference(string visibleText, float x, float y, float size)
-    {
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
-        {
-            var page = doc.AddNewPage(new PageSize(PageWidth, PageHeight));
-            var font = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
-            var fontName = page.GetResources().AddFont(doc, font).GetValue();
-
-            string content =
-                "q /Ghost Do Q\n" +
-                $"BT /{fontName} {size} Tf {x} {y} Td ({visibleText}) Tj ET";
-            page.GetPdfObject().Put(PdfName.Contents,
-                (PdfStream)new PdfStream(Encoding.ASCII.GetBytes(content)).MakeIndirect(doc));
-        }
-        return output.ToArray();
-    }
+    public static byte[] WithDanglingXObjectReference(string visibleText, float x, float y, float size) =>
+        RawContent(font => string.Create(CultureInfo.InvariantCulture,
+            $"q /Ghost Do Q\nBT /{font} {size} Tf {x} {y} Td ({visibleText}) Tj ET"));
 
     /// <summary>
     /// A page with an XObject whose Subtype is neither Image nor Form (a made-up
     /// subtype), used to exercise the redactor's passthrough for unrecognised XObjects.
     /// </summary>
-    public static byte[] WithUnknownXObjectSubtype(string visibleText, float x, float y, float size)
+    public static byte[] WithUnknownXObjectSubtype(string visibleText, float x, float y, float size) => Build(p =>
     {
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
-        {
-            var page = doc.AddNewPage(new PageSize(PageWidth, PageHeight));
-            var font = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
-            var fontName = page.GetResources().AddFont(doc, font).GetValue();
-
-            var weird = (PdfStream)new PdfStream(Array.Empty<byte>()).MakeIndirect(doc);
-            weird.Put(PdfName.Type, PdfName.XObject);
-            weird.Put(PdfName.Subtype, new PdfName("Mystery"));
-            var xobjects = page.GetResources().GetResource(PdfName.XObject) ?? new PdfDictionary();
-            xobjects.Put(new PdfName("Weird1"), weird);
-            page.GetResources().GetPdfObject().Put(PdfName.XObject, xobjects);
-
-            string content =
-                "q /Weird1 Do Q\n" +
-                $"BT /{fontName} {size} Tf {x} {y} Td ({visibleText}) Tj ET";
-            page.GetPdfObject().Put(PdfName.Contents,
-                (PdfStream)new PdfStream(Encoding.ASCII.GetBytes(content)).MakeIndirect(doc));
-        }
-        return output.ToArray();
-    }
+        var weird = new PdfStream(Array.Empty<byte>(), compress: false);
+        weird.Put(PdfName.Type, PdfName.XObject);
+        weird.Put(PdfName.Subtype, PdfName.Of("Mystery"));
+        var resources = p.Page.GetOrCreateResources();
+        var xobjects = new PdfDictionary();
+        xobjects.Put(PdfName.Of("Weird1"), p.Doc.MakeIndirect(weird));
+        resources.Put(PdfName.XObject, xobjects);
+        string font = p.Font().Value;
+        p.Content.Raw(string.Create(CultureInfo.InvariantCulture,
+            $"q /Weird1 Do Q\nBT /{font} {size} Tf {x} {y} Td ({visibleText}) Tj ET"));
+    });
 
     /// <summary>
     /// An otherwise-normal image XObject whose declared bit depth is invalid for its
     /// color space (PDF only allows 1/2/4/8/16 bits per component; this sets 3) — the
-    /// structure looks fine but decoding throws, exercising the pixel-scrubber's
-    /// exception-handling path.
+    /// structure looks fine but decoding fails, exercising the pixel-scrubber's
+    /// failure path.
     /// </summary>
     public static byte[] WithCorruptImage(float x, float y, float width, float height)
     {
-        byte[] pdf = WithImage(x, y, width, height);
-
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfReader(new MemoryStream(pdf)), new PdfWriter(output)))
+        var doc = PdfDocument.Open(WithImage(x, y, width, height));
+        var xobjects = doc.GetPage(1).Resources!.GetAsDictionary(PdfName.XObject)!;
+        foreach (var key in xobjects.Keys)
         {
-            var xobjects = doc.GetPage(1).GetResources().GetResource(PdfName.XObject);
-            foreach (var key in xobjects.KeySet())
-            {
-                var stream = xobjects.GetAsStream(key);
-                if (stream != null && PdfName.Image.Equals(stream.GetAsName(PdfName.Subtype)))
-                {
-                    stream.Put(PdfName.BitsPerComponent, new PdfNumber(3));
-                    stream.SetModified();
-                }
-            }
+            var stream = xobjects.GetAsStream(key);
+            if (stream != null && PdfName.Image.Equals(stream.GetAsName(PdfName.Subtype)))
+                stream.Put(PdfName.BitsPerComponent, new PdfNumber(3));
         }
-        return output.ToArray();
+        return doc.Save();
     }
 
     /// <summary>
@@ -440,100 +339,121 @@ public static class TestPdfs
     /// </summary>
     public static byte[] WithHiddenData()
     {
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
-        {
-            var page = doc.AddNewPage(new PageSize(PageWidth, PageHeight));
-            var font = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
-            new PdfCanvas(page).BeginText().SetFontAndSize(font, 12)
-                .MoveText(72, 750).ShowText("Visible content").EndText();
+        var doc = PdfDocument.CreateNew();
+        var page = new FixturePage(doc, doc.AddNewPage(PageWidth, PageHeight));
+        page.Text("Visible content", 72, 750, 12);
+        page.Flush();
+        var catalog = doc.Catalog!;
 
-            // Metadata (author/title/custom key).
-            doc.GetDocumentInfo().SetAuthor("Jane Author").SetTitle("Internal Draft")
-                .SetMoreInfo("Department", "Legal");
+        // Metadata (author/title/custom key).
+        var info = doc.GetOrCreateInfo();
+        info.Put(PdfName.Author, PdfString.FromText("Jane Author"));
+        info.Put(PdfName.Title, PdfString.FromText("Internal Draft"));
+        info.Put(PdfName.Of("Department"), PdfString.FromText("Legal"));
 
-            // Embedded file attachment.
-            var attachment = iText.Kernel.Pdf.Filespec.PdfFileSpec.CreateEmbeddedFileSpec(
-                doc, System.Text.Encoding.UTF8.GetBytes("secret spreadsheet"),
-                "hidden data", "data.txt", null, null);
-            doc.AddFileAttachment("data.txt", attachment);
+        // Embedded file attachment.
+        var file = new PdfStream(Encoding.UTF8.GetBytes("secret spreadsheet"));
+        file.Put(PdfName.Type, PdfName.Of("EmbeddedFile"));
+        var spec = new PdfDictionary();
+        spec.Put(PdfName.Type, PdfName.Of("Filespec"));
+        spec.Put(PdfName.F, PdfString.FromText("data.txt"));
+        spec.Put(PdfName.Of("UF"), PdfString.FromText("data.txt"));
+        spec.Put(PdfName.Of("Desc"), PdfString.FromText("hidden data"));
+        var ef = new PdfDictionary();
+        ef.Put(PdfName.F, doc.MakeIndirect(file));
+        spec.Put(PdfName.Of("EF"), ef);
+        PdfNameTree.Write(catalog, PdfName.EmbeddedFiles, new[] { (PdfString.FromText("data.txt"), (PdfObject)doc.MakeIndirect(spec)) });
 
-            // Document-level JavaScript.
-            doc.GetCatalog().GetNameTree(PdfName.JavaScript)
-                .AddEntry("track", iText.Kernel.Pdf.Action.PdfAction.CreateJavaScript("app.alert(1);").GetPdfObject());
+        // Document-level JavaScript.
+        var js = new PdfDictionary();
+        js.Put(PdfName.S, PdfName.JavaScript);
+        js.Put(PdfName.JS, PdfString.FromText("app.alert(1);"));
+        PdfNameTree.Write(catalog, PdfName.JavaScript, new[] { (PdfString.FromText("track"), (PdfObject)js) });
 
-            // A comment (sticky-note) annotation.
-            var note = new iText.Kernel.Pdf.Annot.PdfTextAnnotation(new Rectangle(200, 700, 20, 20));
-            note.SetContents("reviewer's private note");
-            page.AddAnnotation(note);
+        // A comment (sticky-note) annotation.
+        var note = new PdfDictionary();
+        note.Put(PdfName.Type, PdfName.Annot);
+        note.Put(PdfName.Subtype, PdfName.Of("Text"));
+        note.Put(PdfName.Rect, new PdfArray(200, 700, 220, 720));
+        note.Put(PdfName.Contents, PdfString.FromText("reviewer's private note"));
+        page.Page.AddAnnotation(note);
 
-            // A bookmark / outline entry.
-            doc.GetOutlines(true).AddOutline("Confidential section");
+        // A bookmark / outline entry.
+        var outlines = doc.MakeIndirect(new PdfDictionary());
+        var item = doc.MakeIndirect(new PdfDictionary());
+        item.Put(PdfName.Title, PdfString.FromText("Confidential section"));
+        item.Put(PdfName.Parent, outlines);
+        outlines.Put(PdfName.Type, PdfName.Outlines);
+        outlines.Put(PdfName.First, item);
+        outlines.Put(PdfName.Of("Last"), item);
+        outlines.Put(PdfName.Count, new PdfNumber(1));
+        catalog.Put(PdfName.Outlines, outlines);
 
-            // An optional-content layer (OCG).
-            _ = new iText.Kernel.Pdf.Layer.PdfLayer("Watermark layer", doc);
-        }
-        return output.ToArray();
+        // An optional-content layer (OCG).
+        var ocg = doc.MakeIndirect(new PdfDictionary());
+        ocg.Put(PdfName.Type, PdfName.Of("OCG"));
+        ocg.Put(PdfName.Name, PdfString.FromText("Watermark layer"));
+        var properties = new PdfDictionary();
+        properties.Put(PdfName.OCGs, new PdfArray(new PdfObject[] { ocg }));
+        var d = new PdfDictionary();
+        d.Put(PdfName.Of("ON"), new PdfArray(new PdfObject[] { ocg }));
+        properties.Put(PdfName.Of("D"), d);
+        catalog.Put(PdfName.OCProperties, properties);
+        return doc.Save();
     }
 
-    /// <summary>A single-page document with a text form field.</summary>
+    /// <summary>A single-page document with a text form field (built by hand, not by FormTools).</summary>
     public static byte[] WithTextField(string fieldName, string initialValue = "")
     {
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
-        {
-            doc.AddNewPage(new PageSize(PageWidth, PageHeight));
-            var form = PdfFormCreator.GetAcroForm(doc, true);
-            var field = new TextFormFieldBuilder(doc, fieldName)
-                .SetWidgetRectangle(new Rectangle(100, 600, 200, 24)).CreateText();
-            field.SetValue(initialValue);
-            form.AddField(field);
-        }
-        return output.ToArray();
+        var doc = PdfDocument.CreateNew();
+        var page = doc.AddNewPage(PageWidth, PageHeight);
+        var field = AcroForm.NewWidget(new PdfRect(100, 600, 200, 24), styled: false);
+        field.Put(PdfName.FT, PdfName.Tx);
+        field.Put(PdfName.DA, PdfString.FromText("/Helv 12 Tf 0 g"));
+        var node = AcroForm.AddMergedField(doc, page, field, fieldName);
+        AcroForm.SetValue(doc, node, initialValue);
+        return doc.Save();
     }
 
     /// <summary>A single-page document carrying a document-level JavaScript open action.</summary>
     public static byte[] WithOpenActionJavaScript(string script = "app.alert('hello');")
     {
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
-        {
-            doc.AddNewPage(new PageSize(PageWidth, PageHeight));
-            doc.GetCatalog().SetOpenAction(PdfAction.CreateJavaScript(script));
-        }
-        return output.ToArray();
+        var doc = PdfDocument.CreateNew();
+        doc.AddNewPage(PageWidth, PageHeight);
+        var action = new PdfDictionary();
+        action.Put(PdfName.S, PdfName.JavaScript);
+        action.Put(PdfName.JS, PdfString.FromText(script));
+        doc.Catalog!.Put(PdfName.OpenAction, action);
+        return doc.Save();
+    }
+
+    private static PdfDictionary UriLink(float x, float y, float width, float height, string url)
+    {
+        var action = new PdfDictionary();
+        action.Put(PdfName.S, PdfName.URI);
+        action.Put(PdfName.URI, new PdfString(Encoding.ASCII.GetBytes(url)));
+        var link = new PdfDictionary();
+        link.Put(PdfName.Type, PdfName.Annot);
+        link.Put(PdfName.Subtype, PdfName.Link);
+        link.Put(PdfName.Rect, new PdfRect(x, y, width, height).ToArray());
+        link.Put(PdfName.A, action);
+        return link;
     }
 
     /// <summary>A single-page document with a link annotation pointing at the given URL.</summary>
     public static byte[] WithLinkTo(string url)
     {
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
-        {
-            var page = doc.AddNewPage(new PageSize(PageWidth, PageHeight));
-            var link = new PdfLinkAnnotation(new Rectangle(72, 700, 200, 20));
-            link.SetAction(PdfAction.CreateURI(url));
-            page.AddAnnotation(link);
-        }
-        return output.ToArray();
+        var doc = PdfDocument.CreateNew();
+        doc.AddNewPage(PageWidth, PageHeight).AddAnnotation(UriLink(72, 700, 200, 20, url));
+        return doc.Save();
     }
 
     /// <summary>A page with a link annotation covering the given rectangle.</summary>
-    public static byte[] WithLinkAnnotation(float x, float y, float width, float height)
+    public static byte[] WithLinkAnnotation(float x, float y, float width, float height) => Build(p =>
     {
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
-        {
-            var page = doc.AddNewPage(new PageSize(PageWidth, PageHeight));
-            var font = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
-            new PdfCanvas(page).BeginText().SetFontAndSize(font, 12)
-                .MoveText(x, y + 4).ShowText("clickable link").EndText();
-            var link = new PdfLinkAnnotation(new Rectangle(x, y, width, height));
-            link.SetAction(PdfAction.CreateURI("https://example.com"));
-            page.AddAnnotation(link);
-        }
-        return output.ToArray();
-    }
+        p.Text("clickable link", x, y + 4, 12);
+        p.Page.AddAnnotation(UriLink(x, y, width, height, "https://example.com"));
+    });
 
     /// <summary>
     /// A raw, uncompressed page that mimics how Chrome / Skia print-to-PDF (what Google Docs

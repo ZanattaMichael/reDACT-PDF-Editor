@@ -12,6 +12,12 @@ internal sealed record PdfSaveOptions
 
     /// <summary>Stamp /ModDate and /Producer into the Info dictionary (what every editor does on save).</summary>
     public bool StampInfo { get; init; } = true;
+
+    /// <summary>
+    /// Pack every non-stream object into an object stream behind a cross-reference stream
+    /// (PDF 1.5's compact layout). Not combinable with <see cref="Encryption"/>.
+    /// </summary>
+    public bool ObjectStreams { get; init; }
 }
 
 /// <summary>
@@ -72,6 +78,11 @@ internal sealed partial class PdfDocument
         if (Info is { } infoDict) writer.Register(infoDict);
 
         string version = encryptDict != null && string.CompareOrdinal(Version, "1.7") < 0 ? "1.7" : Version;
+        if (options.ObjectStreams)
+        {
+            if (encryptDict != null) throw new NotSupportedException("Object streams cannot be combined with encryption here.");
+            return SaveWithObjectStreams(writer, trailer, string.CompareOrdinal(version, "1.5") < 0 ? "1.5" : version);
+        }
         var output = new MemoryStream();
         WriteAscii(output, $"%PDF-{version}\n%âãÏÓ\n");
         var offsets = writer.WriteAll(output);
@@ -85,6 +96,69 @@ internal sealed partial class PdfDocument
         WriteAscii(output, "trailer\n");
         writer.WriteObject(output, trailer, 0, 0, encrypt: false, topLevel: true);
         WriteAscii(output, $"\nstartxref\n{xref.ToString(CultureInfo.InvariantCulture)}\n%%EOF\n");
+        return output.ToArray();
+    }
+
+    /// <summary>
+    /// The compact layout: streams are written as ordinary objects, everything else is packed
+    /// into one object stream, and a cross-reference stream (rather than a table) indexes both.
+    /// </summary>
+    private static byte[] SaveWithObjectStreams(ObjectWriter writer, PdfDictionary trailer, string version)
+    {
+        var output = new MemoryStream();
+        WriteAscii(output, $"%PDF-{version}\n%\u00E2\u00E3\u00CF\u00D3\n");
+        var packed = new MemoryStream();
+        var entries = new SortedDictionary<int, (int Type, long Field2, int Field3)>();
+        var header = new StringBuilder();
+        int index = 0;
+        // Writing an object can reach (and so queue) more; drain until nothing new appears.
+        for (int i = 0; i < writer.Queue.Count; i++)
+        {
+            var obj = writer.Queue[i];
+            var (number, _) = writer.Register(obj);
+            if (obj is PdfStream)
+            {
+                entries[number] = (1, output.Position, 0);
+                writer.WriteIndirect(output, obj, number, 0);
+                continue;
+            }
+            header.Append(CultureInfo.InvariantCulture, $"{number} {packed.Position} ");
+            writer.WriteObject(packed, obj, number, 0, encrypt: false, topLevel: true);
+            packed.WriteByte((byte)'\n');
+            entries[number] = (2, -1, index++);
+        }
+
+        int objStmNumber = writer.Queue.Count + 1;
+        byte[] headerBytes = Encoding.ASCII.GetBytes(header.ToString());
+        var objStm = new PdfStream(headerBytes.Concat(packed.ToArray()).ToArray());
+        objStm.Put(PdfName.Type, PdfName.Of("ObjStm"));
+        objStm.Put(PdfName.N, new PdfNumber(index));
+        objStm.Put(PdfName.First, new PdfNumber(headerBytes.Length));
+        entries[objStmNumber] = (1, output.Position, 0);
+        writer.WriteIndirect(output, objStm, objStmNumber, 0);
+        foreach (var key in entries.Keys.ToList())
+            if (entries[key].Type == 2) entries[key] = (2, objStmNumber, entries[key].Field3);
+
+        int xrefNumber = objStmNumber + 1;
+        long xrefOffset = output.Position;
+        entries[xrefNumber] = (1, xrefOffset, 0);
+        var rows = new MemoryStream();
+        rows.Write(new byte[] { 0, 0, 0, 0, 0, 0xFF, 0xFF }); // object 0, the head of the free list
+        for (int n = 1; n <= xrefNumber; n++)
+        {
+            var (type, f2, f3) = entries.TryGetValue(n, out var e) ? e : (0, 0L, 0);
+            rows.WriteByte((byte)type);
+            for (int k = 3; k >= 0; k--) rows.WriteByte((byte)(f2 >> (8 * k)));
+            rows.WriteByte((byte)(f3 >> 8));
+            rows.WriteByte((byte)f3);
+        }
+        var xref = new PdfStream(rows.ToArray());
+        foreach (var key in trailer.Keys) xref.Put(key, trailer.GetRaw(key));
+        xref.Put(PdfName.Type, PdfName.XRef);
+        xref.Put(PdfName.Size, new PdfNumber(xrefNumber + 1));
+        xref.Put(PdfName.W, new PdfArray(1, 4, 2));
+        writer.WriteIndirect(output, xref, xrefNumber, 0);
+        WriteAscii(output, $"startxref\n{xrefOffset.ToString(CultureInfo.InvariantCulture)}\n%%EOF\n");
         return output.ToArray();
     }
 
@@ -269,6 +343,9 @@ internal sealed partial class PdfDocument
             _security = security;
             _assign = assign;
         }
+
+        /// <summary>Everything queued for writing so far (it grows as written objects reach new ones).</summary>
+        public IReadOnlyList<PdfObject> Queue => _queue;
 
         /// <summary>Gives <paramref name="obj"/> its object number (once), queueing it if it must be written.</summary>
         public (int Number, int Generation) Register(PdfObject obj)

@@ -1,4 +1,4 @@
-using iText.Kernel.Pdf;
+using PdfEditor.Core.Pdf;
 using PdfEditor.Core;
 using SkiaSharp;
 
@@ -116,9 +116,8 @@ public class OcrToolTests
 
     private static (float Width, float Height) PageBox(byte[] pdf, int page)
     {
-        using var doc = new PdfDocument(new PdfReader(new MemoryStream(pdf)));
-        var box = doc.GetPage(page).GetMediaBox();
-        return (box.GetWidth(), box.GetHeight());
+        var box = PdfDocument.Open(pdf).GetPage(page).MediaBox;
+        return (box.Width, box.Height);
     }
 
     private static (int Width, int Height) PngSize(byte[] png)

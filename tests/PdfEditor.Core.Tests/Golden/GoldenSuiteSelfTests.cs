@@ -15,10 +15,11 @@ namespace PdfEditor.Tests.Golden;
 public class GoldenSuiteSelfTests
 {
     /// <summary>
-    /// The premise the whole design rests on: iText does not produce the same bytes twice, so a
-    /// byte-level golden suite over this engine would be permanently flaky — but the projection of
-    /// those bytes <em>is</em> stable. If this ever fails on the first assertion, iText has become
-    /// deterministic and comparing bytes would become an option worth revisiting.
+    /// The premise the whole design rests on: the writer does not produce the same bytes twice
+    /// (every save stamps a fresh <c>/ID</c> and <c>/ModDate</c>), so a byte-level golden suite
+    /// would be permanently flaky — but the projection of those bytes <em>is</em> stable. If this
+    /// ever fails on the first assertion, the writer has become deterministic and comparing bytes
+    /// would become an option worth revisiting.
     /// </summary>
     [Fact]
     public void RawBytes_AreNotReproducible_ButTheProjectionIs()
@@ -27,7 +28,7 @@ public class GoldenSuiteSelfTests
         byte[] second = TestPdfs.MultiPage(2);
 
         Assert.False(first.SequenceEqual(second),
-            "iText produced identical bytes twice. The golden suite compares projections because "
+            "The writer produced identical bytes twice. The golden suite compares projections because "
             + "it does not; if that has changed, revisit the decision rather than leaving this "
             + "comment to rot.");
         Assert.Equal(GoldenProjection.Describe(first), GoldenProjection.Describe(second));
@@ -133,16 +134,9 @@ public class GoldenSuiteSelfTests
 
     private static byte[] WithoutExtGState(byte[] pdf)
     {
-        using var output = new MemoryStream();
-        using (var document = new iText.Kernel.Pdf.PdfDocument(
-                   new iText.Kernel.Pdf.PdfReader(new MemoryStream(pdf)),
-                   new iText.Kernel.Pdf.PdfWriter(output)))
-        {
-            var resources = document.GetPage(1).GetResources().GetPdfObject();
-            resources.Remove(iText.Kernel.Pdf.PdfName.ExtGState);
-            resources.SetModified();
-        }
-        return output.ToArray();
+        var document = PdfEditor.Core.Pdf.PdfDocument.Open(pdf);
+        document.GetPage(1).Resources!.Remove(PdfEditor.Core.Pdf.PdfName.ExtGState);
+        return document.Save();
     }
 
     /// <summary>

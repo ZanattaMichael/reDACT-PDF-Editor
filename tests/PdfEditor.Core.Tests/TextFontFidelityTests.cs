@@ -1,5 +1,4 @@
 using System.Globalization;
-using iText.IO.Font.Constants;
 using PdfEditor.Core;
 using Xunit;
 
@@ -23,13 +22,13 @@ public class TextFontFidelityTests
 
     public static TheoryData<string, float> StandardFonts() => new()
     {
-        { iText.IO.Font.Constants.StandardFonts.HELVETICA, 10f },
-        { iText.IO.Font.Constants.StandardFonts.HELVETICA, 24f },
-        { iText.IO.Font.Constants.StandardFonts.HELVETICA_BOLD, 18f },
-        { iText.IO.Font.Constants.StandardFonts.TIMES_ROMAN, 11f },
-        { iText.IO.Font.Constants.StandardFonts.TIMES_BOLDITALIC, 24f },
-        { iText.IO.Font.Constants.StandardFonts.COURIER, 12f },
-        { iText.IO.Font.Constants.StandardFonts.COURIER_OBLIQUE, 24f },
+        { "Helvetica", 10f },
+        { "Helvetica", 24f },
+        { "Helvetica-Bold", 18f },
+        { "Times-Roman", 11f },
+        { "Times-BoldItalic", 24f },
+        { "Courier", 12f },
+        { "Courier-Oblique", 24f },
     };
 
     /// <summary>
@@ -79,7 +78,7 @@ public class TextFontFidelityTests
     public void ReplaceTextInRegion_RepeatedEdits_DoNotShrinkTheText()
     {
         const float size = 24f;
-        byte[] pdf = TestPdfs.WithTextInFont(iText.IO.Font.Constants.StandardFonts.COURIER, "Edit me", size);
+        byte[] pdf = TestPdfs.WithTextInFont("Courier", "Edit me", size);
         var region = Band(size);
 
         for (int pass = 1; pass <= 3; pass++)
@@ -105,7 +104,7 @@ public class TextFontFidelityTests
     {
         const float size = 24f;
         // WithTextInFont draws its baseline at y=700.
-        byte[] pdf = TestPdfs.WithTextInFont(iText.IO.Font.Constants.StandardFonts.HELVETICA, "ORIGINAL", size);
+        byte[] pdf = TestPdfs.WithTextInFont("Helvetica", "ORIGINAL", size);
         var span = Assert.Single(TextTools.GetTextSpans(pdf, 1));
         var region = new RectRegion(1, span.X, span.Y, span.Width, span.Height);
 
@@ -127,7 +126,7 @@ public class TextFontFidelityTests
     {
         const float size = 20f;
         byte[] pdf = TestPdfs.WithTextInFont(
-            iText.IO.Font.Constants.StandardFonts.TIMES_ROMAN, "Move me", size);
+            "Times-Roman", "Move me", size);
 
         var moved = TextTools.MoveText(pdf, Band(size), 0, -120);
 
@@ -162,7 +161,7 @@ public class TextFontFidelityTests
     public void ReplaceTextInRegion_WhenTheFontIsReproduced_DoesNotWarnAboutSubstitution()
     {
         byte[] pdf = TestPdfs.WithTextInFont(
-            iText.IO.Font.Constants.StandardFonts.TIMES_BOLD, "Reproducible", 14);
+            "Times-Bold", "Reproducible", 14);
 
         var result = TextTools.ReplaceTextInRegion(pdf, Band(14), "Reproducible");
 
@@ -179,7 +178,7 @@ public class TextFontFidelityTests
     public void ReplaceTextInRegion_WhenTheOriginalFontCannotBeReproduced_ReportsTheSubstitution()
     {
         byte[] pdf = TestPdfs.WithTextInFont(
-            iText.IO.Font.Constants.StandardFonts.SYMBOL, "abgd", 18);
+            "Symbol", "abgd", 18);
 
         var result = TextTools.ReplaceTextInRegion(pdf, Band(18), "alpha beta");
 

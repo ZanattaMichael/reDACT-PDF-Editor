@@ -118,7 +118,7 @@ public class GoldenRegressionTests
                 run(doc.Bytes);
             }
             catch (Exception ex) when (ex is InvalidDataException or ArgumentException
-                                           or iText.Kernel.Exceptions.PdfException)
+                                           or PdfEditor.Core.Pdf.PdfFormatException)
             {
                 Assert.False(string.IsNullOrWhiteSpace(ex.Message),
                     $"'{doc.Name}'.{operation} threw {ex.GetType().Name} with no message.");

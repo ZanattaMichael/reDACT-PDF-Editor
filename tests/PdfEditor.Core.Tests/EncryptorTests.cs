@@ -1,4 +1,4 @@
-using iText.Kernel.Exceptions;
+using PdfEditor.Core.Pdf;
 using PdfEditor.Core;
 using Xunit;
 
@@ -27,7 +27,7 @@ public class EncryptorTests
         byte[] encrypted = Encryptor.Encrypt(pdf, "pw");
 
         Assert.Contains("private payload", TestPdfAssert.ExtractText(encrypted, 1, "pw"));
-        Assert.Throws<BadPasswordException>(() => TestPdfAssert.ExtractText(encrypted));
+        Assert.Throws<PdfPasswordException>(() => TestPdfAssert.ExtractText(encrypted));
     }
 
     [Fact]

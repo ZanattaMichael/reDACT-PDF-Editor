@@ -1,4 +1,4 @@
-using iText.Kernel.Pdf;
+using PdfEditor.Core.Pdf;
 using PdfEditor.Core;
 
 namespace PdfEditor.Tests;
@@ -44,12 +44,12 @@ public class SanitizerTests
     {
         byte[] cleaned = Sanitizer.Sanitize(TestPdfs.WithHiddenData(), new SanitizeOptions()).Pdf;
 
-        using var doc = new PdfDocument(new PdfReader(new MemoryStream(cleaned)));
-        var info = doc.GetDocumentInfo();
-        Assert.True(string.IsNullOrEmpty(info.GetAuthor()));
-        Assert.True(string.IsNullOrEmpty(info.GetTitle()));
-        Assert.Null(info.GetMoreInfo("Department"));
-        Assert.Null(doc.GetCatalog().GetPdfObject().Get(PdfName.Metadata)); // XMP gone
+        var doc = PdfDocument.Open(cleaned);
+        var info = doc.Info;
+        Assert.True(string.IsNullOrEmpty(info?.GetText(PdfName.Author)));
+        Assert.True(string.IsNullOrEmpty(info?.GetText(PdfName.Title)));
+        Assert.Null(info?.Get(PdfName.Of("Department")));
+        Assert.Null(doc.Catalog!.Get(PdfName.Metadata)); // XMP gone
     }
 
     [Fact]
@@ -84,15 +84,16 @@ public class SanitizerTests
         // drop the comment but keep the link and the fillable field.
         byte[] pdf = TestPdfs.WithTextField("email", "a@b.com");
         // add a comment annotation on the field page
-        using var withNote = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfReader(new MemoryStream(pdf)), new PdfWriter(withNote)))
-        {
-            var note = new iText.Kernel.Pdf.Annot.PdfTextAnnotation(new iText.Kernel.Geom.Rectangle(400, 700, 20, 20));
-            note.SetContents("comment");
-            doc.GetPage(1).AddAnnotation(note);
-        }
+        var doc = PdfDocument.Open(pdf);
+        var note = new PdfDictionary();
+        note.Put(PdfName.Type, PdfName.Annot);
+        note.Put(PdfName.Subtype, PdfName.Of("Text"));
+        note.Put(PdfName.Rect, new PdfArray(400, 700, 420, 720));
+        note.Put(PdfName.Contents, PdfString.FromText("comment"));
+        doc.GetPage(1).AddAnnotation(note);
+        byte[] withNote = doc.Save();
 
-        byte[] cleaned = Sanitizer.Sanitize(withNote.ToArray(),
+        byte[] cleaned = Sanitizer.Sanitize(withNote,
             new SanitizeOptions(Metadata: false, Attachments: false, ScriptsAndActions: false,
                 Annotations: true, Bookmarks: false, HiddenLayers: false)).Pdf;
 

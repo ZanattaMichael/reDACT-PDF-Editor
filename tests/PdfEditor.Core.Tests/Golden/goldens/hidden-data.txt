@@ -1,7 +1,7 @@
 # hidden-data
 # Metadata, attachment, JavaScript, annotation, bookmark and an OCG (TestPdfs).
 == source ==
-bytes: ~2304
+bytes: ~1536
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -15,7 +15,7 @@ page 1: media=[0 0 595 842] crop=none rotate=0 annots=1 group=none
 acroform: none
 validation: clean
 == redact ==
-bytes: ~2560
+bytes: ~2048
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -29,7 +29,7 @@ page 1: media=[0 0 595 842] crop=none rotate=0 annots=1 group=none
 acroform: none
 validation: clean
 == replace-region-text ==
-bytes: ~2816
+bytes: ~2048
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -44,7 +44,7 @@ page 1: media=[0 0 595 842] crop=none rotate=0 annots=1 group=none
 acroform: none
 validation: clean
 == rotate-90 ==
-bytes: ~2304
+bytes: ~1536
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -58,12 +58,12 @@ page 1: media=[0 0 595 842] crop=none rotate=90 annots=1 group=none
 acroform: none
 validation: clean
 == merge-with-self ==
-bytes: ~1792
+bytes: ~1536
 pdf-version: PDF-1.7
 pages: 2
 encrypted: no
 info: has-CreationDate=yes has-ModDate=yes has-ID=yes
-catalog: has-OpenAction=no has-Names=no has-Outlines=yes has-OCProperties=no has-Metadata=no
+catalog: has-OpenAction=no has-Names=no has-Outlines=no has-OCProperties=no has-Metadata=no
 page 1: media=[0 0 595 842] crop=none rotate=0 annots=1 group=none
   text: Visible content
   typeset: Helvetica@12.0
@@ -77,7 +77,7 @@ page 2: media=[0 0 595 842] crop=none rotate=0 annots=1 group=none
 acroform: none
 validation: clean
 == sanitize ==
-bytes: ~1280
+bytes: ~768
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -91,7 +91,7 @@ page 1: media=[0 0 595 842] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == add-text-field ==
-bytes: ~3072
+bytes: ~2304
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -106,7 +106,7 @@ acroform: needAppearances=none fields=1
   field: name=(golden.added) type=Tx value=(filled) hasAppearance=yes
 validation: clean
 == sign-image ==
-bytes: ~2816
+bytes: ~2304
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -117,6 +117,6 @@ page 1: media=[0 0 595 842] crop=none rotate=0 annots=1 group=none
   typeset: Helvetica@12.0
   ops: BTx1 Dox1 ETx1 Qx2 Tdx1 Tfx1 Tjx1 cmx1 qx2
   font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
-  xobject Im1: subtype=Image size=24x12 cs=/DeviceRGB bpc=8 filter=/FlateDecode smask=yes mask=no
+  xobject Im1: subtype=Image size=24x12 cs=/DeviceRGB bpc=8 filter=/FlateDecode smask=no mask=no
 acroform: none
 validation: clean

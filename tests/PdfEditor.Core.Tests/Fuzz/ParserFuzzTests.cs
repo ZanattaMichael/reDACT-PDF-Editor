@@ -102,7 +102,7 @@ public class ParserFuzzTests
     /// <summary>
     /// The structure and mutation corpora contain nothing but hand-written bytes, so their
     /// contents are pinned: if this hash moves without the corpus being deliberately edited,
-    /// something has crept in that varies between runs or machines (an iText-produced document, a
+    /// something has crept in that varies between runs or machines (a writer-produced document, a
     /// timestamp, an unseeded PRNG) and every future failure would be irreproducible.
     /// </summary>
     [Fact]
@@ -135,7 +135,7 @@ public class ParserFuzzTests
     /// Regression test for the robustness bug this fuzzing campaign found. Every one of these
     /// inputs used to escape the engine as a bare <see cref="NullReferenceException"/>,
     /// <see cref="IndexOutOfRangeException"/> or <see cref="InvalidCastException"/> from inside
-    /// iText's filter decoders and canvas processor — a failure the host could only report as
+    /// the filter decoders and canvas processor of iText, the PDF library reDACT used before 3.0 — a failure the host could only report as
     /// "Object reference not set to an instance of an object". They must now surface as a typed
     /// failure that says the document is malformed, with the original preserved for diagnosis.
     /// </summary>
@@ -176,7 +176,7 @@ public class ParserFuzzTests
 
     /// <summary>
     /// Regression test for the most serious finding of this campaign: a form XObject that lists
-    /// itself in its own <c>/Resources /XObject</c> sent iText's content processor into unbounded
+    /// itself in its own <c>/Resources /XObject</c> sent iText's content processor (pre-3.0) into unbounded
     /// recursion, and the resulting <see cref="StackOverflowException"/> is uncatchable on .NET —
     /// it killed the whole test host ("Test Run Aborted") and would equally kill the native host
     /// process of anyone who opened such a file. It must now be refused up front.

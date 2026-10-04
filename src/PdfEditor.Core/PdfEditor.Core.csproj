@@ -12,6 +12,11 @@
          to reach through a hand-built PDF for each one. They stay internal: this widens the test
          project's reach, not the public API. -->
     <InternalsVisibleTo Include="PdfEditor.Core.Tests" />
+    <!-- The other test projects build their fixtures with the engine directly rather than with a
+         second PDF library, so they need the same view of it. -->
+    <InternalsVisibleTo Include="PdfEditor.IntegrationTests" />
+    <InternalsVisibleTo Include="PdfEditor.NativeHost.Tests" />
+    <InternalsVisibleTo Include="PdfEditor.Perf.Tests" />
   </ItemGroup>
 
   <ItemGroup>
@@ -21,9 +26,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="itext" Version="9.7.0" />
-    <PackageReference Include="itext.bouncy-castle-adapter" Version="9.7.0" />
     <PackageReference Include="PDFtoImage" Version="5.2.1" />
+    <!-- CMS (PKCS#7) signing and PKCS#12 building for digital signatures; Microsoft, MIT. -->
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="8.0.1" />
   </ItemGroup>
 
 </Project>
