@@ -1,10 +1,4 @@
-using iText.Forms;
-using iText.Forms.Fields;
-using iText.Kernel.Geom;
-using iText.Kernel.Pdf;
-using iText.Kernel.Pdf.Annot;
-using iText.Kernel.Pdf.Canvas;
-using iText.Kernel.Pdf.Xobject;
+using PdfEditor.Core.Pdf;
 
 namespace PdfEditor.Core;
 
@@ -34,23 +28,13 @@ public static class FlattenTool
     public static FlattenResult Flatten(byte[] pdf, Mode mode, string? password = null)
     {
         int forms = 0, annotations = 0;
-        using var output = new MemoryStream();
-        using (var doc = PdfIo.Open(pdf, output, password))
-        {
-            if (mode is Mode.Forms or Mode.Everything)
-            {
-                var form = PdfFormCreator.GetAcroForm(doc, false);
-                if (form != null)
-                {
-                    forms = form.GetAllFormFields().Count;
-                    if (forms > 0) form.FlattenFields(); // draws each field's appearance, drops the widgets
-                }
-            }
+        var doc = PdfIo.Open(pdf, password);
+        if (mode is Mode.Forms or Mode.Everything)
+            forms = AcroForm.Flatten(doc); // draws each field's appearance, drops the widgets
 
-            if (mode is Mode.AnnotationsOnly or Mode.Everything)
-                annotations = FlattenAnnotations(doc);
-        }
-        return new FlattenResult(output.ToArray(), forms, annotations);
+        if (mode is Mode.AnnotationsOnly or Mode.Everything)
+            annotations = FlattenAnnotations(doc);
+        return new FlattenResult(PdfIo.Save(doc), forms, annotations);
     }
 
     /// <summary>
@@ -61,27 +45,27 @@ public static class FlattenTool
     private static int FlattenAnnotations(PdfDocument doc)
     {
         int count = 0;
-        for (int i = 1; i <= doc.GetNumberOfPages(); i++)
+        foreach (var page in doc.Pages)
         {
-            var page = doc.GetPage(i);
-            // Snapshot: RemoveAnnotation mutates the page's annotation list.
-            var annotations = page.GetAnnotations().ToArray();
-            PdfCanvas? canvas = null;
+            // Snapshot: removing an annotation mutates the page's annotation list.
+            var annotations = page.Annotations.ToArray();
+            ContentBuilder? canvas = null;
             foreach (var annot in annotations)
             {
-                var subtype = annot.GetSubtype();
+                var subtype = annot.GetAsName(PdfName.Subtype);
                 if (subtype == null || subtype.Equals(PdfName.Widget) || Skip.Contains(subtype)) continue;
 
-                var normal = annot.GetAppearanceDictionary()?.GetAsStream(PdfName.N);
-                var rect = annot.GetRectangle()?.ToRectangle();
+                var normal = AcroForm.NormalAppearance(annot);
+                var rect = PdfRect.FromArray(annot.GetAsArray(PdfName.Rect));
                 if (normal == null || rect == null) continue; // nothing to bake at a known place
 
-                // Lazily open a default-user-space canvas only when there is something to draw.
-                canvas ??= PdfContentGuard.InDefaultUserSpace(page, doc);
-                canvas.AddXObjectFittedIntoRectangle(new PdfFormXObject(normal), rect);
+                // Only open a drawing when there is something to draw.
+                canvas ??= new ContentBuilder();
+                AcroForm.DrawFitted(canvas, page, normal, rect.Value);
                 page.RemoveAnnotation(annot);
                 count++;
             }
+            if (canvas != null) PdfContentGuard.DrawInDefaultUserSpace(page, canvas.ToArray());
         }
         return count;
     }

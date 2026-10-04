@@ -1,4 +1,4 @@
-using iText.Kernel.Pdf;
+using PdfEditor.Core.Pdf;
 
 namespace PdfEditor.Core;
 
@@ -8,13 +8,13 @@ public static class UrlTools
     /// <summary>The web (URI) links only — used for URL safety scanning and the Links panel.</summary>
     public static IReadOnlyList<PdfLink> ExtractLinks(byte[] pdf, string? password = null)
     {
-        using var doc = PdfIo.OpenReadOnly(pdf, password);
+        var doc = PdfIo.OpenReadOnly(pdf, password);
         var links = new List<PdfLink>();
-        for (int i = 1; i <= doc.GetNumberOfPages(); i++)
-            foreach (var annot in doc.GetPage(i).GetAnnotations())
+        for (int i = 1; i <= doc.PageCount; i++)
+            foreach (var annot in doc.GetPage(i).Annotations)
             {
-                var rect = annot.GetRectangle()?.ToRectangle();
-                CollectUri(annot.GetPdfObject().Get(PdfName.A), i, rect, links);
+                var rect = PdfRect.FromArray(annot.GetAsArray(PdfName.Rect));
+                CollectUri(annot.Get(PdfName.A), i, rect, links);
             }
         return links;
     }
@@ -26,18 +26,18 @@ public static class UrlTools
     /// </summary>
     public static IReadOnlyList<PdfLink> ExtractLinkAnnotations(byte[] pdf, string? password = null)
     {
-        using var doc = PdfIo.OpenReadOnly(pdf, password);
+        var doc = PdfIo.OpenReadOnly(pdf, password);
         var links = new List<PdfLink>();
-        for (int i = 1; i <= doc.GetNumberOfPages(); i++)
-            foreach (var annot in doc.GetPage(i).GetAnnotations())
+        for (int i = 1; i <= doc.PageCount; i++)
+            foreach (var annot in doc.GetPage(i).Annotations)
             {
-                if (!PdfName.Link.Equals(annot.GetSubtype())) continue;
-                var ad = annot.GetPdfObject();
+                if (!PdfName.Link.Equals(annot.GetAsName(PdfName.Subtype))) continue;
+                var ad = annot;
                 var (kind, url) = ClassifyLink(ad);
-                var rect = annot.GetRectangle()?.ToRectangle();
+                var rect = PdfRect.FromArray(annot.GetAsArray(PdfName.Rect));
                 links.Add(rect == null
                     ? new PdfLink(i, url, kind)
-                    : new PdfLink(i, url, kind, rect.GetX(), rect.GetY(), rect.GetWidth(), rect.GetHeight()));
+                    : new PdfLink(i, url, kind, rect.Value.X, rect.Value.Y, rect.Value.Width, rect.Value.Height));
             }
         return links;
     }
@@ -54,7 +54,7 @@ public static class UrlTools
             if (s.Equals(PdfName.GoTo)) return ("goto", "");
             if (s.Equals(PdfName.GoToR)) return ("remote-goto", "");
             if (s.Equals(PdfName.Launch)) return ("launch", "");
-            if (s.Equals(PdfName.Named)) return ("named", a!.GetAsName(PdfName.N)?.GetValue() ?? "");
+            if (s.Equals(PdfName.Named)) return ("named", a!.GetAsName(PdfName.N)?.Value ?? "");
             if (s.Equals(PdfName.SubmitForm)) return ("submit", "");
             return ("link", "");
         }
@@ -62,7 +62,7 @@ public static class UrlTools
         return annot.Get(PdfName.Dest) != null ? ("goto", "") : ("link", "");
     }
 
-    private static void CollectUri(PdfObject? obj, int page, iText.Kernel.Geom.Rectangle? rect,
+    private static void CollectUri(PdfObject? obj, int page, PdfRect? rect,
         List<PdfLink> links)
     {
         if (obj is PdfArray arr)
@@ -77,7 +77,7 @@ public static class UrlTools
             if (!string.IsNullOrWhiteSpace(uri))
                 links.Add(rect == null
                     ? new PdfLink(page, uri)
-                    : new PdfLink(page, uri, "uri", rect.GetX(), rect.GetY(), rect.GetWidth(), rect.GetHeight()));
+                    : new PdfLink(page, uri, "uri", rect.Value.X, rect.Value.Y, rect.Value.Width, rect.Value.Height));
         }
         CollectUri(a.Get(PdfName.Next), page, rect, links); // chained actions
     }

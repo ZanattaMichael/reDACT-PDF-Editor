@@ -1,6 +1,4 @@
-using iText.Kernel.Colors;
-using iText.Kernel.Pdf;
-using iText.Kernel.Pdf.Extgstate;
+using PdfEditor.Core.Pdf;
 
 namespace PdfEditor.Core;
 
@@ -8,7 +6,7 @@ namespace PdfEditor.Core;
 public static class HighlightTool
 {
     // A pleasant highlighter yellow when no colour is given.
-    private static readonly DeviceRgb DefaultColour = new(255, 235, 59);
+    private static readonly PdfColor DefaultColour = PdfColor.Rgb(255, 235, 59);
 
     /// <summary>
     /// Paints highlight rectangles over the given regions on a page. The rectangles are drawn with
@@ -20,20 +18,22 @@ public static class HighlightTool
         string? colorHex = null, string? password = null)
     {
         if (rects.Count == 0) return EditResult.Of(pdf);
-        var colour = (TextTools.ParseColor(colorHex) as DeviceRgb) ?? DefaultColour;
+        var colour = TextTools.ParseColor(colorHex) ?? DefaultColour;
 
-        using var output = new MemoryStream();
-        using (var doc = PdfIo.Open(pdf, output, password))
-        {
-            if (page < 1 || page > doc.GetNumberOfPages())
-                throw new ArgumentOutOfRangeException(nameof(page), $"Page {page} does not exist.");
+        var doc = PdfIo.Open(pdf, password);
+        if (page < 1 || page > doc.PageCount)
+            throw new ArgumentOutOfRangeException(nameof(page), $"Page {page} does not exist.");
 
-            var canvas = PdfContentGuard.InDefaultUserSpace(doc.GetPage(page), doc);
-            canvas.SetExtGState(new PdfExtGState().SetBlendMode(PdfName.Multiply)).SetFillColor(colour);
-            foreach (var r in rects)
-                canvas.Rectangle(r.X, r.Y, r.Width, r.Height);
-            canvas.Fill();
-        }
-        return EditResult.Of(output.ToArray());
+        var pdfPage = doc.GetPage(page);
+        var gs = new PdfDictionary();
+        gs.Put(PdfName.Type, PdfName.ExtGState);
+        gs.Put(PdfName.BM, PdfName.Multiply);
+        var gsName = PdfResources.Add(pdfPage.GetOrCreateResources(), PdfName.ExtGState, "Gs", doc.MakeIndirect(gs));
+        var canvas = new ContentBuilder().GraphicsState(gsName).FillColor(colour);
+        foreach (var r in rects)
+            canvas.Rectangle(r.X, r.Y, r.Width, r.Height);
+        canvas.Fill();
+        PdfContentGuard.DrawInDefaultUserSpace(pdfPage, canvas.ToArray());
+        return EditResult.Of(PdfIo.Save(doc));
     }
 }

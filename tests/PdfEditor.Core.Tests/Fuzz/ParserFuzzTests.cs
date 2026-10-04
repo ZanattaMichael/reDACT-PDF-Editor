@@ -141,7 +141,6 @@ public class ParserFuzzTests
     /// </summary>
     [Theory]
     [InlineData("flate-truncated-half")]      // was InvalidCastException
-    [InlineData("flate-length-indirect-missing")] // was NullReferenceException
     [InlineData("lzw-truncated")]             // was InvalidCastException
     [InlineData("lzw-all-ones")]              // was NullReferenceException
     [InlineData("runlength-truncated-literal")] // was IndexOutOfRangeException
@@ -159,6 +158,20 @@ public class ParserFuzzTests
             Assert.Contains("malformed or corrupt", ex.Message, StringComparison.Ordinal);
             Assert.NotNull(ex.InnerException); // the original defect is kept for diagnosis
         }
+    }
+
+    /// <summary>
+    /// A stream whose <c>/Length</c> names an object that does not exist used to escape as a
+    /// <see cref="NullReferenceException"/>. The stream's extent is still recoverable from its
+    /// <c>endstream</c> keyword — which is how the engine now reads it — so the document is simply
+    /// readable, and the search finds the text it holds.
+    /// </summary>
+    [Fact]
+    public void StreamLengthNamingAMissingObject_IsReadFromItsEndstream()
+    {
+        byte[] pdf = FuzzCorpus.FilterCases.Single(c => c.Name == "flate-length-indirect-missing").Bytes;
+        Assert.NotEmpty(TextTools.FindText(pdf, "payload"));
+        Assert.NotNull(Redactor.Redact(pdf, new[] { Region }).Pdf);
     }
 
     /// <summary>
@@ -195,14 +208,24 @@ public class ParserFuzzTests
     }
 
     /// <summary>
-    /// A catalog whose <c>/Root</c> is a string used to escape as a bare
-    /// <see cref="InvalidCastException"/> from iText's document constructor, on every entry point
-    /// at once. Opening a document is now guarded, so the failure explains itself.
+    /// A trailer whose <c>/Root</c> is a string used to escape as a bare
+    /// <see cref="InvalidCastException"/> from the previous engine's document constructor, on every
+    /// entry point at once. The catalog object itself is intact, so the repair path finds it by
+    /// its <c>/Type /Catalog</c> — as other readers do — and the document opens with its page.
     /// </summary>
     [Fact]
-    public void CatalogThatIsNotADictionary_IsRefusedWithAnExplicableError()
+    public void TrailerRootThatIsNotADictionary_IsRepairedFromTheCatalogObject()
     {
         byte[] pdf = FuzzCorpus.StructureCases.Single(c => c.Name == "trailer-root-is-a-string").Bytes;
+        Assert.Equal(1, PdfInspector.GetInfo(pdf).PageCount);
+    }
+
+    /// <summary>A document with no catalog anywhere is refused with an explicable error, not a crash.</summary>
+    [Fact]
+    public void DocumentWithNoCatalogAnywhere_IsRefusedWithAnExplicableError()
+    {
+        byte[] pdf = System.Text.Encoding.ASCII.GetBytes(
+            "%PDF-1.7\n1 0 obj\n<< /Foo 1 >>\nendobj\ntrailer\n<< /Root (nope) /Size 2 >>\n%%EOF\n");
         var ex = Assert.Throws<InvalidDataException>(() => PdfInspector.GetInfo(pdf));
         Assert.Contains("malformed or corrupt", ex.Message, StringComparison.Ordinal);
     }

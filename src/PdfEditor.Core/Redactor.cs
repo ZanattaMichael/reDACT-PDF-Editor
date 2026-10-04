@@ -1,7 +1,4 @@
-using iText.Kernel.Colors;
-using iText.Kernel.Geom;
-using iText.Kernel.Pdf;
-using iText.Kernel.Pdf.Canvas;
+using PdfEditor.Core.Pdf;
 
 namespace PdfEditor.Core;
 
@@ -42,40 +39,37 @@ public static class Redactor
         if (byPage.Count == 0) return EditResult.Of(pdf);
 
         var warnings = new List<string>();
-        using var output = new MemoryStream();
-        using (var doc = PdfIo.Open(pdf, output, password))
+        var doc = PdfIo.Open(pdf, password);
+        foreach (var (pageNumber, pageRegions) in byPage)
         {
-            foreach (var (pageNumber, pageRegions) in byPage)
-            {
-                if (pageNumber < 1 || pageNumber > doc.GetNumberOfPages())
-                    throw new ArgumentOutOfRangeException(nameof(regions), $"Page {pageNumber} does not exist.");
-                var page = doc.GetPage(pageNumber);
-                var rects = pageRegions.Select(r => new Rectangle(r.X, r.Y, r.Width, r.Height)).ToList();
+            if (pageNumber < 1 || pageNumber > doc.PageCount)
+                throw new ArgumentOutOfRangeException(nameof(regions), $"Page {pageNumber} does not exist.");
+            var page = doc.GetPage(pageNumber);
+            var rects = pageRegions.Select(r => new PdfRect(r.X, r.Y, r.Width, r.Height)).ToList();
 
-                var editor = ContentStreamEditor.Create(rects, doc, warnings, kinds: kinds);
-                editor.EditPage(page);
+            var editor = ContentStreamEditor.Create(rects, doc, warnings, kinds: kinds);
+            editor.EditPage(page);
 
-                RemoveAnnotationsIn(page, rects);
+            RemoveAnnotationsIn(page, rects);
 
-                if (drawBoxes)
-                    DrawBoxesInDefaultUserSpace(doc, page, rects, fill);
-            }
+            if (drawBoxes)
+                DrawBoxesInDefaultUserSpace(page, rects, fill);
         }
-        return new EditResult(output.ToArray(), warnings);
+        return new EditResult(PdfIo.Save(doc), warnings);
     }
 
     /// <summary>
     /// Paints the opaque black boxes over the regions. Drawing in the page's default user space
-    /// (see <see cref="PdfContentGuard.InDefaultUserSpace"/>) keeps the boxes aligned with the
+    /// (see <see cref="PdfContentGuard.DrawInDefaultUserSpace"/>) keeps the boxes aligned with the
     /// content even when the page leaves a scale/flip transform active — which is why the box used
     /// to land in the wrong place on Chrome / Google-Docs-exported PDFs while the removal was fine.
     /// </summary>
-    private static void DrawBoxesInDefaultUserSpace(PdfDocument doc, PdfPage page, IList<Rectangle> rects, Fill fill)
+    private static void DrawBoxesInDefaultUserSpace(PdfPage page, IList<PdfRect> rects, Fill fill)
     {
-        var canvas = PdfContentGuard.InDefaultUserSpace(page, doc);
-        canvas.SetFillColor(ColorConstants.BLACK);
+        var canvas = new ContentBuilder();
+        canvas.FillRgb(0, 0, 0);
         foreach (var r in rects)
-            canvas.Rectangle(r.GetLeft(), r.GetBottom(), r.GetWidth(), r.GetHeight());
+            canvas.Rectangle(r.Left, r.Bottom, r.Width, r.Height);
         canvas.Fill();
 
         // The hatch is purely visual — the content is already gone, and the solid black beneath keeps
@@ -83,34 +77,31 @@ public static class Redactor
         if (fill == Fill.Hatch)
             foreach (var r in rects)
                 DrawHatch(canvas, r);
+        PdfContentGuard.DrawInDefaultUserSpace(page, canvas.ToArray());
     }
 
     /// <summary>Overlays a diagonal hatch, clipped to the box, in a slightly lighter grey.</summary>
-    private static void DrawHatch(PdfCanvas canvas, Rectangle r)
+    private static void DrawHatch(ContentBuilder canvas, PdfRect r)
     {
         canvas.SaveState();
-        canvas.Rectangle(r.GetLeft(), r.GetBottom(), r.GetWidth(), r.GetHeight()).Clip().EndPath();
-        canvas.SetStrokeColor(new DeviceGray(0.30f)).SetLineWidth(0.8f);
+        canvas.Rectangle(r.Left, r.Bottom, r.Width, r.Height).Clip().EndPath();
+        canvas.StrokeGray(0.30).LineWidth(0.8);
         const float step = 4f;
-        float h = r.GetHeight();
+        float h = r.Height;
         // 45° lines sweeping across the box; starting h to the left of the box so the whole face fills.
-        for (float x = r.GetLeft() - h; x <= r.GetRight(); x += step)
-            canvas.MoveTo(x, r.GetBottom()).LineTo(x + h, r.GetTop());
+        for (float x = r.Left - h; x <= r.Right; x += step)
+            canvas.MoveTo(x, r.Bottom).LineTo(x + h, r.Top);
         canvas.Stroke();
         canvas.RestoreState();
     }
 
-    private static void RemoveAnnotationsIn(PdfPage page, IList<Rectangle> regions)
+    private static void RemoveAnnotationsIn(PdfPage page, IList<PdfRect> regions)
     {
-        foreach (var annotation in page.GetAnnotations().ToArray())
+        foreach (var annotation in page.Annotations.ToArray())
         {
-            var rect = annotation.GetRectangle()?.ToRectangle();
-            if (rect != null && regions.Any(r => Intersects(r, rect)))
+            var rect = PdfRect.FromArray(annotation.GetAsArray(PdfName.Rect));
+            if (rect is { } r && regions.Any(region => region.Intersects(r)))
                 page.RemoveAnnotation(annotation);
         }
     }
-
-    private static bool Intersects(Rectangle a, Rectangle b) =>
-        a.GetLeft() < b.GetRight() && b.GetLeft() < a.GetRight() &&
-        a.GetBottom() < b.GetTop() && b.GetBottom() < a.GetTop();
 }

@@ -1,8 +1,4 @@
-using iText.Kernel.Geom;
-using iText.Kernel.Pdf;
-using iText.Kernel.Pdf.Canvas.Parser;
-using iText.Kernel.Pdf.Canvas.Parser.Data;
-using iText.Kernel.Pdf.Canvas.Parser.Listener;
+using PdfEditor.Core.Pdf;
 using SkiaSharp;
 
 namespace PdfEditor.Core;
@@ -25,55 +21,52 @@ public static class RedactionReporter
     {
         var byPage = regions
             .GroupBy(r => r.Page)
-            .ToDictionary(g => g.Key, g => g.Select(r => new Rectangle(r.X, r.Y, r.Width, r.Height)).ToList());
+            .ToDictionary(g => g.Key, g => g.Select(r => new PdfRect(r.X, r.Y, r.Width, r.Height)).ToList());
 
         var pageReports = new List<RedactionPageReport>();
         var regionReports = new List<RedactionRegionReport>();
-        bool metadata;
-        using (var doc = PdfIo.OpenReadOnly(pdf, password))
+        var doc = PdfIo.OpenReadOnly(pdf, password);
+        int total = doc.PageCount;
+        foreach (int pageNum in byPage.Keys.Where(p => p >= 1 && p <= total).OrderBy(p => p))
         {
-            int total = doc.GetNumberOfPages();
-            foreach (int pageNum in byPage.Keys.Where(p => p >= 1 && p <= total).OrderBy(p => p))
+            var rects = byPage[pageNum];
+            var page = doc.GetPage(pageNum);
+
+            // Gather the page's content once, then attribute it both per-region (for the
+            // itemised compliance detail) and per-page (distinct, so overlapping regions do
+            // not inflate the totals).
+            var spans = TextTools.GetTextSpans(pdf, pageNum, password)
+                .Select(s => new PdfRect(s.X, s.Y, s.Width, s.Height)).ToList();
+            var pageImages = PageImages(page);
+            var imageRects = pageImages.Select(i => i.Rect).ToList();
+            var annots = page.Annotations
+                .Select(a => PdfRect.FromArray(a.GetAsArray(PdfName.Rect))).Where(r => r != null).Select(r => r!.Value).ToList();
+
+            foreach (var r in rects)
             {
-                var rects = byPage[pageNum];
-                var page = doc.GetPage(pageNum);
+                string text = TextTools.GetTextInRegion(pdf,
+                    new RectRegion(pageNum, r.X, r.Y, r.Width, r.Height), password).Text;
+                var thumbs = pageImages
+                    .Where(im => r.Intersects(im.Rect))
+                    .Select(im => Thumbnail(im.Decode()))
+                    .Where(t => t != null).Select(t => t!).ToList();
 
-                // Gather the page's content once, then attribute it both per-region (for the
-                // itemised compliance detail) and per-page (distinct, so overlapping regions do
-                // not inflate the totals).
-                var spans = TextTools.GetTextSpans(pdf, pageNum, password)
-                    .Select(s => new Rectangle(s.X, s.Y, s.Width, s.Height)).ToList();
-                var pageImages = PageImages(page);
-                var imageRects = pageImages.Select(i => i.Rect).ToList();
-                var annots = page.GetAnnotations()
-                    .Select(a => a.GetRectangle()?.ToRectangle()).Where(r => r != null).Select(r => r!).ToList();
-
-                foreach (var r in rects)
-                {
-                    string text = TextTools.GetTextInRegion(pdf,
-                        new RectRegion(pageNum, r.GetX(), r.GetY(), r.GetWidth(), r.GetHeight()), password).Text;
-                    var thumbs = pageImages
-                        .Where(im => Intersects(r, im.Rect) && im.Bytes is { Length: > 0 })
-                        .Select(im => Thumbnail(im.Bytes!))
-                        .Where(t => t != null).Select(t => t!).ToList();
-
-                    var removed = new RemovedContent(
-                        TextRuns: spans.Count(s => Intersects(r, s)),
-                        Images: imageRects.Count(im => Intersects(r, im)),
-                        Annotations: annots.Count(an => Intersects(r, an)),
-                        Text: text,
-                        ImageThumbnails: thumbs);
-                    regionReports.Add(new RedactionRegionReport(pageNum,
-                        r.GetX(), r.GetY(), r.GetWidth(), r.GetHeight(), removed));
-                }
-
-                pageReports.Add(new RedactionPageReport(pageNum, rects.Count,
-                    spans.Count(s => Overlaps(rects, s)),
-                    imageRects.Count(im => Overlaps(rects, im)),
-                    annots.Count(an => Overlaps(rects, an))));
+                var removed = new RemovedContent(
+                    TextRuns: spans.Count(s => r.Intersects(s)),
+                    Images: imageRects.Count(im => r.Intersects(im)),
+                    Annotations: annots.Count(an => r.Intersects(an)),
+                    Text: text,
+                    ImageThumbnails: thumbs);
+                regionReports.Add(new RedactionRegionReport(pageNum,
+                    r.X, r.Y, r.Width, r.Height, removed));
             }
-            metadata = HasIdentifyingMetadata(doc);
+
+            pageReports.Add(new RedactionPageReport(pageNum, rects.Count,
+                spans.Count(s => Overlaps(rects, s)),
+                imageRects.Count(im => Overlaps(rects, im)),
+                annots.Count(an => Overlaps(rects, an))));
         }
+        bool metadata = HasIdentifyingMetadata(doc);
 
         // JavaScript and metadata survive redaction (they are stripped by "Remove hidden info"),
         // so the report flags them so a user auditing a redaction knows they are still there.
@@ -90,43 +83,41 @@ public static class RedactionReporter
             Residual: new ResidualRisk(javaScript, metadata));
     }
 
-    private static bool Overlaps(IReadOnlyList<Rectangle> regions, Rectangle box) =>
-        regions.Any(r => Intersects(r, box));
+    private static bool Overlaps(IReadOnlyList<PdfRect> regions, PdfRect box) =>
+        regions.Any(r => r.Intersects(box));
 
-    private static bool Intersects(Rectangle a, Rectangle b) =>
-        a.GetLeft() < b.GetRight() && b.GetLeft() < a.GetRight() &&
-        a.GetBottom() < b.GetTop() && b.GetBottom() < a.GetTop();
-
-    /// <summary>Image draws on a page, each with its on-page rectangle and (best-effort) bytes.</summary>
+    /// <summary>Image draws on a page, each with its on-page rectangle and a way to decode it.</summary>
     private static List<FoundImage> PageImages(PdfPage page)
     {
-        var finder = new ImageFinder();
-        PdfIo.Guarded($"scanning images on page {page.GetDocument().GetPageNumber(page)}",
-            () => new PdfCanvasProcessor(finder).ProcessPageContent(page));
+        var finder = new ImageFinder(page.Resources);
+        PdfIo.Guarded($"scanning images on page {page.Number}",
+            () => new ContentProcessor(finder).ProcessPage(page));
         return finder.Found;
     }
 
     /// <summary>Re-encodes an image as a small PNG thumbnail (base64), or null if it can't be decoded.</summary>
-    private static string? Thumbnail(byte[] imageBytes)
+    private static string? Thumbnail(SKBitmap? src)
     {
-        try
+        if (src == null) return null;
+        using (src)
         {
-            using var src = SKBitmap.Decode(imageBytes);
-            if (src == null) return null;
-            float scale = Math.Min(1f, (float)ThumbnailMaxDim / Math.Max(src.Width, src.Height));
-            var sampling = new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None);
-            SKBitmap? resized = scale < 1f
-                ? src.Resize(new SKImageInfo(Math.Max(1, (int)(src.Width * scale)),
-                    Math.Max(1, (int)(src.Height * scale))), sampling)
-                : null;
-            using var chosen = resized; // null when no resize was needed; src is used directly below
-            using var image = SKImage.FromBitmap(resized ?? src);
-            using var enc = image.Encode(SKEncodedImageFormat.Png, 80);
-            return Convert.ToBase64String(enc.ToArray());
-        }
-        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
-        {
-            return null; // an undecodable/unsupported image is simply omitted from the report
+            try
+            {
+                float scale = Math.Min(1f, (float)ThumbnailMaxDim / Math.Max(src.Width, src.Height));
+                var sampling = new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.None);
+                SKBitmap? resized = scale < 1f
+                    ? src.Resize(new SKImageInfo(Math.Max(1, (int)(src.Width * scale)),
+                        Math.Max(1, (int)(src.Height * scale))), sampling)
+                    : null;
+                using var chosen = resized; // null when no resize was needed; src is used directly below
+                using var image = SKImage.FromBitmap(resized ?? src);
+                using var enc = image.Encode(SKEncodedImageFormat.Png, 80);
+                return Convert.ToBase64String(enc.ToArray());
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+            {
+                return null; // an undecodable/unsupported image is simply omitted from the report
+            }
         }
     }
 
@@ -137,36 +128,29 @@ public static class RedactionReporter
     /// </summary>
     private static bool HasIdentifyingMetadata(PdfDocument doc)
     {
-        if (doc.GetCatalog().GetPdfObject().Get(PdfName.Metadata) != null) return true;
-        var info = doc.GetDocumentInfo();
-        return !string.IsNullOrWhiteSpace(info.GetTitle())
-            || !string.IsNullOrWhiteSpace(info.GetAuthor())
-            || !string.IsNullOrWhiteSpace(info.GetSubject())
-            || !string.IsNullOrWhiteSpace(info.GetKeywords())
-            || !string.IsNullOrWhiteSpace(info.GetCreator());
+        if (doc.Catalog?.Get(PdfName.Metadata) != null) return true;
+        var info = doc.Info;
+        if (info == null) return false;
+        return new[] { PdfName.Title, PdfName.Author, PdfName.Subject, PdfName.Keywords, PdfName.Creator }
+            .Any(k => !string.IsNullOrWhiteSpace(info.GetText(k)));
     }
 
-    private sealed record FoundImage(Rectangle Rect, byte[]? Bytes);
+    private sealed record FoundImage(PdfRect Rect, Func<SKBitmap?> Decode);
 
-    private sealed class ImageFinder : IEventListener
+    private sealed class ImageFinder : IContentListener
     {
+        private readonly PdfDictionary? _resources;
+        public ImageFinder(PdfDictionary? resources) => _resources = resources;
         public List<FoundImage> Found { get; } = new();
 
-        public void EventOccurred(IEventData data, EventType type)
+        public void OnImage(ImageRenderInfo info)
         {
-            if (type != EventType.RENDER_IMAGE || data is not ImageRenderInfo info) return;
-            var m = info.GetImageCtm();
-            float w = m.Get(Matrix.I11), h = m.Get(Matrix.I22);
-            float x = m.Get(Matrix.I31), y = m.Get(Matrix.I32);
-            var rect = new Rectangle(Math.Min(x, x + w), Math.Min(y, y + h), Math.Abs(w), Math.Abs(h));
-            byte[]? bytes = null;
-            try { bytes = info.GetImage()?.GetImageBytes(); }
-            catch { /* unsupported encoding — the rect is still counted, just no thumbnail */ }
-            Found.Add(new FoundImage(rect, bytes));
+            var resources = _resources;
+            Func<SKBitmap?> decode = info.Stream != null
+                ? () => PdfImages.TryDecode(info.Stream, resources, out _)
+                : () => PdfImages.TryDecodeInline(info.InlineDictionary!, info.InlineData ?? Array.Empty<byte>(), resources, out _);
+            Found.Add(new FoundImage(info.BoundingBox, decode));
         }
-
-        public ICollection<EventType> GetSupportedEvents() =>
-            new HashSet<EventType> { EventType.RENDER_IMAGE };
     }
 }
 

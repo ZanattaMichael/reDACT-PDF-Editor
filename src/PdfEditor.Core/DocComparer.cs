@@ -1,7 +1,5 @@
 using System.Text.RegularExpressions;
-using iText.Kernel.Pdf;
-using iText.Kernel.Pdf.Canvas.Parser;
-using iText.Kernel.Pdf.Canvas.Parser.Listener;
+using PdfEditor.Core.Pdf;
 
 namespace PdfEditor.Core;
 
@@ -20,10 +18,10 @@ public static class DocComparer
     public static ComparisonReport Compare(byte[] oldPdf, byte[] newPdf,
         string? oldPassword = null, string? newPassword = null)
     {
-        using var docOld = PdfIo.OpenReadOnly(oldPdf, oldPassword);
-        using var docNew = PdfIo.OpenReadOnly(newPdf, newPassword);
-        int pagesOld = docOld.GetNumberOfPages();
-        int pagesNew = docNew.GetNumberOfPages();
+        var docOld = PdfIo.OpenReadOnly(oldPdf, oldPassword);
+        var docNew = PdfIo.OpenReadOnly(newPdf, newPassword);
+        int pagesOld = docOld.PageCount;
+        int pagesNew = docNew.PageCount;
 
         var pages = new List<PageDiff>();
         int changed = 0, added = 0, removed = 0;
@@ -43,7 +41,12 @@ public static class DocComparer
 
     private static string[] Words(PdfDocument doc, int page)
     {
-        string text = PdfTextExtractor.GetTextFromPage(doc.GetPage(page), new LocationTextExtractionStrategy());
+        var pdfPage = doc.GetPage(page);
+        string text = PdfIo.Guarded($"extracting text from page {page}", () =>
+        {
+            PdfStructureGuard.EnsureFormXObjectsTerminate(pdfPage);
+            return LocationTextExtraction.ExtractPage(pdfPage);
+        });
         return Regex.Split(text.Trim(), @"\s+", RegexOptions.None, TimeSpan.FromSeconds(2))
             .Where(w => w.Length > 0).ToArray();
     }

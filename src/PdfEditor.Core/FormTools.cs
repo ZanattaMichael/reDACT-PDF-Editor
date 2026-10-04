@@ -1,13 +1,5 @@
-using iText.Forms;
-using iText.Forms.Fields;
-using iText.Forms.Fields.Properties;
-using iText.IO.Font.Constants;
-using iText.Kernel.Colors;
-using iText.Kernel.Font;
-using iText.Kernel.Geom;
-using iText.Kernel.Pdf;
-using iText.Kernel.Pdf.Action;
-using iText.Kernel.Pdf.Canvas;
+using PdfEditor.Core.Pdf;
+using PdfEditor.Core.Pdf.Fonts;
 
 namespace PdfEditor.Core;
 
@@ -21,22 +13,16 @@ public static class FormTools
     public static EditResult AddTextField(byte[] pdf, int page, RectRegion rect, string? name = null,
         string? value = null, string? password = null, bool multiline = false, string? script = null)
     {
-        using var output = new MemoryStream();
-        using (var doc = PdfIo.Open(pdf, output, password))
-        {
-            if (page < 1 || page > doc.GetNumberOfPages())
-                throw new ArgumentOutOfRangeException(nameof(page), $"Page {page} does not exist.");
-            var form = PdfFormCreator.GetAcroForm(doc, true);
-            var field = new TextFormFieldBuilder(doc, UniqueName(form, name, "text"))
-                .SetWidgetRectangle(new Rectangle(rect.X, rect.Y, rect.Width, rect.Height))
-                .SetPage(page).CreateText();
-            if (multiline) field.SetMultiline(true);
-            field.SetValue(value ?? "");
-            StyleWidget(field);
-            AttachScript(field, script);
-            form.AddField(field);
-        }
-        return EditResult.Of(output.ToArray());
+        var doc = PdfIo.Open(pdf, password);
+        var pdfPage = PageOrThrow(doc, page);
+        var field = AcroForm.NewWidget(ToRect(rect), styled: true);
+        field.Put(PdfName.FT, PdfName.Tx);
+        field.Put(PdfName.DA, PdfString.FromText("/Helv 0 Tf 0 g"));
+        if (multiline) field.Put(PdfName.Ff, new PdfNumber(AcroForm.FlagMultiline));
+        var node = AcroForm.AddMergedField(doc, pdfPage, field, UniqueName(doc, name, "text"));
+        AcroForm.SetValue(doc, node, value ?? "");
+        AttachScript(node, script);
+        return EditResult.Of(PdfIo.Save(doc));
     }
 
     /// <summary>
@@ -50,21 +36,17 @@ public static class FormTools
         if (choices.Length == 0)
             throw new ArgumentException("A dropdown needs at least one option.", nameof(options));
 
-        using var output = new MemoryStream();
-        using (var doc = PdfIo.Open(pdf, output, password))
-        {
-            if (page < 1 || page > doc.GetNumberOfPages())
-                throw new ArgumentOutOfRangeException(nameof(page), $"Page {page} does not exist.");
-            var form = PdfFormCreator.GetAcroForm(doc, true);
-            var field = new ChoiceFormFieldBuilder(doc, UniqueName(form, name, "choice"))
-                .SetWidgetRectangle(new Rectangle(rect.X, rect.Y, rect.Width, rect.Height))
-                .SetPage(page).SetOptions(choices).CreateComboBox();
-            field.SetValue(choices[0]);
-            StyleWidget(field);
-            AttachScript(field, script);
-            form.AddField(field);
-        }
-        return EditResult.Of(output.ToArray());
+        var doc = PdfIo.Open(pdf, password);
+        var pdfPage = PageOrThrow(doc, page);
+        var field = AcroForm.NewWidget(ToRect(rect), styled: true);
+        field.Put(PdfName.FT, PdfName.Ch);
+        field.Put(PdfName.Ff, new PdfNumber(AcroForm.FlagCombo));
+        field.Put(PdfName.DA, PdfString.FromText("/Helv 0 Tf 0 g"));
+        field.Put(PdfName.Opt, new PdfArray(choices.Select(c => (PdfObject)PdfString.FromText(c))));
+        var node = AcroForm.AddMergedField(doc, pdfPage, field, UniqueName(doc, name, "choice"));
+        AcroForm.SetValue(doc, node, choices[0]);
+        AttachScript(node, script);
+        return EditResult.Of(PdfIo.Save(doc));
     }
 
     /// <summary>
@@ -80,58 +62,59 @@ public static class FormTools
         if (choices.Length < 2)
             throw new ArgumentException("A radio/option group needs at least two options.", nameof(options));
 
-        using var output = new MemoryStream();
-        using (var doc = PdfIo.Open(pdf, output, password))
-        {
-            if (page < 1 || page > doc.GetNumberOfPages())
-                throw new ArgumentOutOfRangeException(nameof(page), $"Page {page} does not exist.");
-            var pdfPage = doc.GetPage(page);
-            var form = PdfFormCreator.GetAcroForm(doc, true);
-            var builder = new RadioFormFieldBuilder(doc, UniqueName(form, name, "radio"));
-            var group = builder.CreateRadioGroup();
+        var doc = PdfIo.Open(pdf, password);
+        var pdfPage = PageOrThrow(doc, page);
+        var form = AcroForm.GetOrCreate(doc);
+        AcroForm.EnsureDefaultResources(doc, form);
+        string groupName = UniqueName(doc, name, "radio");
 
-            const float box = 14f;
-            float rowHeight = Math.Max(box + 4f, Math.Min(28f, rect.Height / choices.Length));
-            float top = rect.Y + rect.Height;
-            var canvas = new PdfCanvas(pdfPage);
-            var font = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
-            for (int i = 0; i < choices.Length; i++)
-            {
-                float y = top - (i + 1) * rowHeight + (rowHeight - box) / 2f;
-                var radio = builder.CreateRadioButton(choices[i], new Rectangle(rect.X, y, box, box));
-                radio.SetBorderWidth(1);
-                radio.SetBorderColor(ColorConstants.GRAY);
-                radio.SetBackgroundColor(FieldFill);
-                group.AddKid(radio);
-                canvas.BeginText().SetFontAndSize(font, 11)
-                    .MoveText(rect.X + box + 6, y + 2).ShowText(choices[i]).EndText();
-            }
-            group.SetValue(choices[0]); // first option selected by default
-            AttachScript(group, script);
-            form.AddField(group, pdfPage);
+        var group = doc.MakeIndirect(new PdfDictionary());
+        group.Put(PdfName.FT, PdfName.Btn);
+        group.Put(PdfName.Ff, new PdfNumber(AcroForm.FlagRadio | AcroForm.FlagNoToggleToOff));
+        group.Put(PdfName.T, PdfString.FromText(groupName));
+        var kids = new PdfArray();
+        group.Put(PdfName.Kids, kids);
+
+        const float box = 14f;
+        float rowHeight = Math.Max(box + 4f, Math.Min(28f, rect.Height / choices.Length));
+        float top = rect.Y + rect.Height;
+        var font = PdfFont.Standard(StandardFonts.Helvetica);
+        var fontName = PdfResources.Add(pdfPage.GetOrCreateResources(), PdfName.Font, "F", doc.MakeIndirect(font.Dictionary!));
+        var labels = new ContentBuilder();
+        var widgets = new List<PdfDictionary>();
+        for (int i = 0; i < choices.Length; i++)
+        {
+            float y = top - (i + 1) * rowHeight + (rowHeight - box) / 2f;
+            var widget = AcroForm.NewWidget(new PdfRect(rect.X, y, box, box), styled: true);
+            widget.Put(PdfName.Parent, group);
+            AcroForm.BuildRadioAppearances(doc, widget, choices[i]);
+            pdfPage.AddAnnotation(widget);
+            kids.Add(widget);
+            widgets.Add(widget);
+            labels.BeginText().Font(fontName, 11).MoveText(rect.X + box + 6, y + 2)
+                .ShowText(font.Encode(choices[i])).EndText();
         }
-        return EditResult.Of(output.ToArray());
+        form.GetAsArray(PdfName.Fields)!.Add(group);
+        var node = new FormFieldNode { Dictionary = group, Name = groupName, Widgets = widgets };
+        AcroForm.SetValue(doc, node, choices[0]); // first option selected by default
+        AttachScript(node, script);
+        PdfContentGuard.DrawInDefaultUserSpace(pdfPage, labels.ToArray());
+        return EditResult.Of(PdfIo.Save(doc));
     }
 
     /// <summary>Inserts a checkbox on the given page at the given rectangle.</summary>
     public static EditResult AddCheckbox(byte[] pdf, int page, RectRegion rect, string? name = null,
         bool isChecked = false, string? password = null, string? script = null)
     {
-        using var output = new MemoryStream();
-        using (var doc = PdfIo.Open(pdf, output, password))
-        {
-            if (page < 1 || page > doc.GetNumberOfPages())
-                throw new ArgumentOutOfRangeException(nameof(page), $"Page {page} does not exist.");
-            var form = PdfFormCreator.GetAcroForm(doc, true);
-            var field = new CheckBoxFormFieldBuilder(doc, UniqueName(form, name, "check"))
-                .SetWidgetRectangle(new Rectangle(rect.X, rect.Y, rect.Width, rect.Height))
-                .SetPage(page).SetCheckType(CheckBoxType.CHECK).CreateCheckBox();
-            field.SetValue(isChecked ? "Yes" : "Off");
-            StyleWidget(field);
-            AttachScript(field, script);
-            form.AddField(field);
-        }
-        return EditResult.Of(output.ToArray());
+        var doc = PdfIo.Open(pdf, password);
+        var pdfPage = PageOrThrow(doc, page);
+        var field = AcroForm.NewWidget(ToRect(rect), styled: true);
+        field.Put(PdfName.FT, PdfName.Btn);
+        AcroForm.BuildCheckBoxAppearances(doc, field, "Yes");
+        var node = AcroForm.AddMergedField(doc, pdfPage, field, UniqueName(doc, name, "check"));
+        AcroForm.SetValue(doc, node, isChecked ? "Yes" : "Off");
+        AttachScript(node, script);
+        return EditResult.Of(PdfIo.Save(doc));
     }
 
     /// <summary>
@@ -142,26 +125,29 @@ public static class FormTools
     public static EditResult AddButton(byte[] pdf, int page, RectRegion rect, string? name = null,
         string? caption = null, string? script = null, string? password = null)
     {
-        using var output = new MemoryStream();
-        using (var doc = PdfIo.Open(pdf, output, password))
-        {
-            if (page < 1 || page > doc.GetNumberOfPages())
-                throw new ArgumentOutOfRangeException(nameof(page), $"Page {page} does not exist.");
-            var form = PdfFormCreator.GetAcroForm(doc, true);
-            var field = new PushButtonFormFieldBuilder(doc, UniqueName(form, name, "button"))
-                .SetWidgetRectangle(new Rectangle(rect.X, rect.Y, rect.Width, rect.Height))
-                .SetCaption(string.IsNullOrWhiteSpace(caption) ? "Button" : caption)
-                .SetPage(page).CreatePushButton();
-            field.GetFirstFormAnnotation().SetBorderColor(ColorConstants.GRAY);
-            AttachScript(field, script, asActivation: true);
-            form.AddField(field);
-        }
-        return EditResult.Of(output.ToArray());
+        var doc = PdfIo.Open(pdf, password);
+        var pdfPage = PageOrThrow(doc, page);
+        var form = AcroForm.GetOrCreate(doc);
+        string label = string.IsNullOrWhiteSpace(caption) ? "Button" : caption;
+        var field = AcroForm.NewWidget(ToRect(rect), styled: true);
+        field.Put(PdfName.FT, PdfName.Btn);
+        field.Put(PdfName.Ff, new PdfNumber(AcroForm.FlagPushButton));
+        field.GetAsDictionary(PdfName.MK)!.Put(PdfName.Of("CA"), PdfString.FromText(label));
+        AcroForm.EnsureDefaultResources(doc, form);
+        AcroForm.BuildButtonAppearance(doc, form, field, label);
+        var node = AcroForm.AddMergedField(doc, pdfPage, field, UniqueName(doc, name, "button"));
+        AttachScript(node, script, asActivation: true);
+        return EditResult.Of(PdfIo.Save(doc));
     }
 
-    // A light fill so an empty field is a visible box on the page (many readers, including the
-    // PDFium-based preview, draw nothing for a borderless, value-less widget).
-    private static readonly DeviceRgb FieldFill = new(240, 244, 250);
+    private static PdfPage PageOrThrow(PdfDocument doc, int page)
+    {
+        if (page < 1 || page > doc.PageCount)
+            throw new ArgumentOutOfRangeException(nameof(page), $"Page {page} does not exist.");
+        return doc.GetPage(page);
+    }
+
+    private static PdfRect ToRect(RectRegion r) => new(r.X, r.Y, r.Width, r.Height);
 
     /// <summary>
     /// Attaches <paramref name="script"/> to every one of a field's widgets so it runs when the
@@ -171,47 +157,34 @@ public static class FormTools
     /// "run this when the field is clicked/toggled". Radio groups get it on each option's widget.
     /// No-op for a null/empty script.
     /// </summary>
-    private static void AttachScript(PdfFormField field, string? script, bool asActivation = false)
+    private static void AttachScript(FormFieldNode field, string? script, bool asActivation = false)
     {
         if (string.IsNullOrEmpty(script)) return;
-        foreach (var widget in field.GetWidgets())
+        foreach (var widget in field.Widgets)
         {
             if (asActivation)
             {
-                widget.SetAction(PdfAction.CreateJavaScript(script));
+                widget.Put(PdfName.A, JavaScriptTool.JavaScriptAction(script));
                 continue;
             }
-            var obj = widget.GetPdfObject();
-            var additional = obj.GetAsDictionary(PdfName.AA) ?? new PdfDictionary();
-            additional.Put(PdfName.U, PdfAction.CreateJavaScript(script).GetPdfObject());
-            obj.Put(PdfName.AA, additional);
+            var additional = widget.GetAsDictionary(PdfName.AA) ?? new PdfDictionary();
+            additional.Put(PdfName.U, JavaScriptTool.JavaScriptAction(script));
+            widget.Put(PdfName.AA, additional);
         }
     }
 
-    /// <summary>Gives a widget a visible border + light background and generates its appearance so
-    /// it renders as an obvious box (not blank page space) in every viewer.</summary>
-    private static void StyleWidget(PdfFormField field)
-    {
-        var widget = field.GetFirstFormAnnotation();
-        widget.SetBorderWidth(1);
-        widget.SetBorderColor(ColorConstants.GRAY);
-        widget.SetBackgroundColor(FieldFill);
-        field.RegenerateField(); // emit an /AP appearance stream so PDFium actually draws it
-    }
-
     /// <summary>The page number (1-based) and rectangle of a field's first on-page widget.</summary>
-    private static (int Page, Rectangle? Rect) WidgetLocation(PdfDocument doc, PdfFormField field)
+    private static (int Page, PdfRect? Rect) WidgetLocation(PdfDocument doc, FormFieldNode field)
     {
-        var widget = field.GetWidgets().FirstOrDefault();
+        var widget = field.Widgets.FirstOrDefault();
         if (widget == null) return (0, null);
-        var page = widget.GetPage();
-        return (page == null ? 0 : doc.GetPageNumber(page), widget.GetRectangle()?.ToRectangle());
+        return (AcroForm.PageOf(doc, widget), PdfRect.FromArray(widget.GetAsArray(PdfName.Rect)));
     }
 
     /// <summary>A field name that doesn't collide with an existing one.</summary>
-    private static string UniqueName(PdfAcroForm form, string? requested, string prefix)
+    private static string UniqueName(PdfDocument doc, string? requested, string prefix)
     {
-        var existing = form.GetAllFormFields().Keys;
+        var existing = AcroForm.AllNodes(doc).Select(n => n.Name).ToHashSet(StringComparer.Ordinal);
         string baseName = string.IsNullOrWhiteSpace(requested) ? prefix : requested.Trim();
         if (!existing.Contains(baseName)) return baseName;
         for (int i = 2; ; i++)
@@ -224,21 +197,18 @@ public static class FormTools
     /// <summary>Lists every fillable field with its type, current value, and allowed options.</summary>
     public static IReadOnlyList<FormField> ListFields(byte[] pdf, string? password = null)
     {
-        using var doc = PdfIo.OpenReadOnly(pdf, password);
-        var form = PdfFormCreator.GetAcroForm(doc, false);
-        if (form == null) return Array.Empty<FormField>();
-
+        var doc = PdfIo.OpenReadOnly(pdf, password);
         var fields = new List<FormField>();
-        foreach (var (name, field) in form.GetAllFormFields())
+        foreach (var field in AcroForm.TerminalFields(doc))
         {
             string type = FieldType(field);
             if (type == "container") continue; // non-terminal parent — not directly fillable
-            bool readOnly = (field.GetFieldFlags() & PdfFormField.FF_READ_ONLY) != 0;
+            bool readOnly = (field.Flags & AcroForm.FlagReadOnly) != 0;
             var (page, rect) = WidgetLocation(doc, field);
             string? script = FieldScript(field);
-            fields.Add(new FormField(name, type, field.GetValueAsString() ?? "", Options(field), readOnly,
+            fields.Add(new FormField(field.Name, type, AcroForm.ValueAsString(field), Options(field), readOnly,
                 page,
-                rect?.GetX() ?? 0, rect?.GetY() ?? 0, rect?.GetWidth() ?? 0, rect?.GetHeight() ?? 0,
+                rect?.X ?? 0, rect?.Y ?? 0, rect?.Width ?? 0, rect?.Height ?? 0,
                 script));
         }
         return fields;
@@ -252,35 +222,31 @@ public static class FormTools
     public static EditResult FillFields(byte[] pdf, IReadOnlyDictionary<string, string> values,
         bool flatten = false, string? password = null)
     {
-        using var output = new MemoryStream();
-        using (var doc = PdfIo.Open(pdf, output, password))
+        var doc = PdfIo.Open(pdf, password);
+        if (AcroForm.Get(doc) != null)
         {
-            var form = PdfFormCreator.GetAcroForm(doc, false);
-            if (form != null)
-            {
-                var all = form.GetAllFormFields();
-                foreach (var (name, value) in values)
-                    if (all.TryGetValue(name, out var field)) field.SetValue(value);
-                if (flatten) form.FlattenFields();
-            }
+            var all = AcroForm.TerminalFields(doc).GroupBy(f => f.Name).ToDictionary(g => g.Key, g => g.First());
+            foreach (var (name, value) in values)
+                if (all.TryGetValue(name, out var field)) AcroForm.SetValue(doc, field, value);
+            if (flatten) AcroForm.Flatten(doc);
         }
-        return EditResult.Of(output.ToArray());
+        return EditResult.Of(PdfIo.Save(doc));
     }
 
-    private static string FieldType(PdfFormField field)
+    private static string FieldType(FormFieldNode field)
     {
-        var type = field.GetFormType();
-        if (type == null) return "container";
-        if (type.Equals(PdfName.Tx)) return "text";
-        if (type.Equals(PdfName.Ch)) return "choice";
-        if (type.Equals(PdfName.Sig)) return "signature";
-        if (type.Equals(PdfName.Btn))
+        switch (field.FieldType)
         {
-            long flags = field.GetFieldFlags();
-            if ((flags & PdfButtonFormField.FF_PUSH_BUTTON) != 0) return "button";
-            return (flags & PdfButtonFormField.FF_RADIO) != 0 ? "radio" : "checkbox";
+            case null: return "container";
+            case "Tx": return "text";
+            case "Ch": return "choice";
+            case "Sig": return "signature";
+            case "Btn":
+                int flags = field.Flags;
+                if ((flags & AcroForm.FlagPushButton) != 0) return "button";
+                return (flags & AcroForm.FlagRadio) != 0 ? "radio" : "checkbox";
+            default: return "text";
         }
-        return "text";
     }
 
     /// <summary>
@@ -290,13 +256,12 @@ public static class FormTools
     /// calculation/visibility patterns, be simulated locally; see extension/src/formScript.js.
     /// Returns null for a field with no script.
     /// </summary>
-    private static string? FieldScript(PdfFormField field)
+    private static string? FieldScript(FormFieldNode field)
     {
-        foreach (var widget in field.GetWidgets())
+        foreach (var widget in field.Widgets)
         {
-            var obj = widget.GetPdfObject();
-            string? script = JsActionText(obj.Get(PdfName.A))
-                ?? JsActionText(obj.GetAsDictionary(PdfName.AA)?.Get(PdfName.U));
+            string? script = JsActionText(widget.Get(PdfName.A))
+                ?? JsActionText(widget.GetAsDictionary(PdfName.AA)?.Get(PdfName.U));
             if (script != null) return script;
         }
         return null;
@@ -310,32 +275,30 @@ public static class FormTools
         return a.Get(PdfName.JS) switch
         {
             PdfString s => s.ToUnicodeString(),
-            PdfStream st => System.Text.Encoding.UTF8.GetString(st.GetBytes()),
+            PdfStream st => System.Text.Encoding.UTF8.GetString(st.GetDecodedBytes()),
             _ => null
         };
     }
 
     /// <summary>Allowed values: choice /Opt entries, or a checkbox/radio's appearance states.</summary>
-    private static IReadOnlyList<string> Options(PdfFormField field)
+    private static IReadOnlyList<string> Options(FormFieldNode field)
     {
-        var opts = field.GetPdfObject().GetAsArray(PdfName.Opt);
-        if (opts != null)
+        if (AcroForm.Inherited(field.Dictionary, PdfName.Opt) is PdfArray opts)
         {
             var list = new List<string>();
             foreach (var entry in opts)
             {
                 if (entry is PdfString s) list.Add(s.ToUnicodeString());
-                else if (entry is PdfArray pair && pair.Size() > 1 && pair.Get(1) is PdfString disp)
+                else if (entry is PdfArray pair && pair.Count > 1 && pair.Get(1) is PdfString disp)
                     list.Add(disp.ToUnicodeString());
             }
             return list;
         }
 
-        var type = field.GetFormType();
-        if (type != null && type.Equals(PdfName.Btn))
+        if (field.FieldType == "Btn")
         {
-            var states = field.GetAppearanceStates();
-            if (states != null && states.Length > 0) return states.ToList();
+            var states = field.Widgets.SelectMany(AcroForm.AppearanceStates).Distinct().ToList();
+            if (states.Count > 0) return states;
         }
         return Array.Empty<string>();
     }

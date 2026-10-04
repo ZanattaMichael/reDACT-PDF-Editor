@@ -75,8 +75,7 @@ public static class VisualDiff
 
     private static int PageCount(byte[] pdf, string? password)
     {
-        using var doc = PdfIo.OpenReadOnly(pdf, password);
-        return doc.GetNumberOfPages();
+        return PdfIo.OpenReadOnly(pdf, password).PageCount;
     }
 
     /// <summary>Composites a bitmap (or blank) onto a white canvas of the target size and reads its pixels.</summary>

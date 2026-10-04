@@ -1,4 +1,4 @@
-using iText.Kernel.Pdf;
+using PdfEditor.Core.Pdf;
 
 namespace PdfEditor.Core;
 
@@ -26,8 +26,8 @@ public static class Sanitizer
     /// <summary>Counts each category of hidden information present, for a "what will be removed" preview.</summary>
     public static HiddenDataReport Inspect(byte[] pdf, string? password = null)
     {
-        using var doc = PdfIo.OpenReadOnly(pdf, password);
-        var catalog = doc.GetCatalog().GetPdfObject();
+        var doc = PdfIo.OpenReadOnly(pdf, password);
+        var catalog = doc.Catalog!;
 
         var safety = PdfSafety.Scan(pdf, password);
         return new HiddenDataReport(
@@ -36,7 +36,7 @@ public static class Sanitizer
             ScriptsAndActions: safety.JavaScriptCount + safety.UrlCount,
             Annotations: CountAnnotations(doc),
             Bookmarks: CountOutlines(catalog.GetAsDictionary(PdfName.Outlines)?.GetAsDictionary(PdfName.First)),
-            HiddenLayers: catalog.GetAsDictionary(PdfName.OCProperties)?.GetAsArray(PdfName.OCGs)?.Size() ?? 0);
+            HiddenLayers: catalog.GetAsDictionary(PdfName.OCProperties)?.GetAsArray(PdfName.OCGs)?.Count ?? 0);
     }
 
     /// <summary>Removes the selected categories of hidden information and returns the cleaned PDF.</summary>
@@ -56,17 +56,14 @@ public static class Sanitizer
         // discover any custom metadata keys read-only first and clear them by name below.
         var customKeys = options.Metadata ? CustomInfoKeys(working, pw) : new List<string>();
 
-        using var output = new MemoryStream();
-        using (var doc = PdfIo.Open(working, output, pw))
-        {
-            var catalog = doc.GetCatalog().GetPdfObject();
-            if (options.Metadata) StripMetadata(doc, catalog, customKeys);
-            if (options.Attachments) StripAttachments(doc, catalog);
-            if (options.Annotations) StripAnnotations(doc);
-            if (options.Bookmarks) catalog.Remove(PdfName.Outlines);
-            if (options.HiddenLayers) catalog.Remove(PdfName.OCProperties);
-        }
-        return EditResult.Of(output.ToArray());
+        var doc = PdfIo.Open(working, pw);
+        var catalog = doc.Catalog!;
+        if (options.Metadata) StripMetadata(doc, catalog, customKeys);
+        if (options.Attachments) StripAttachments(doc, catalog);
+        if (options.Annotations) StripAnnotations(doc);
+        if (options.Bookmarks) catalog.Remove(PdfName.Outlines);
+        if (options.HiddenLayers) catalog.Remove(PdfName.OCProperties);
+        return EditResult.Of(PdfIo.Save(doc));
     }
 
     // ------------------------------------------------------------- counting
@@ -74,10 +71,10 @@ public static class Sanitizer
     private static int CountMetadata(PdfDocument doc, PdfDictionary catalog)
     {
         int count = 0;
-        var info = doc.GetTrailer().GetAsDictionary(PdfName.Info); // reachable in read-only mode
+        var info = doc.Trailer.GetAsDictionary(PdfName.Info); // reachable in read-only mode
         if (info != null)
-            foreach (var key in info.KeySet())
-                if (!AutoInfoKeys.Contains(key.GetValue())
+            foreach (var key in info.Keys)
+                if (!AutoInfoKeys.Contains(key.Value)
                     && info.Get(key) is PdfString s && !string.IsNullOrEmpty(s.ToUnicodeString()))
                     count++;
         if (catalog.Get(PdfName.Metadata) != null) count++; // XMP packet
@@ -87,10 +84,10 @@ public static class Sanitizer
     /// <summary>Custom (non-standard, non-auto) Info keys, read while no writer is attached.</summary>
     private static List<string> CustomInfoKeys(byte[] pdf, string? password)
     {
-        using var doc = PdfIo.OpenReadOnly(pdf, password);
-        var info = doc.GetTrailer().GetAsDictionary(PdfName.Info);
+        var doc = PdfIo.OpenReadOnly(pdf, password);
+        var info = doc.Trailer.GetAsDictionary(PdfName.Info);
         if (info == null) return new List<string>();
-        return info.KeySet().Select(k => k.GetValue())
+        return info.Keys.Select(k => k.Value)
             .Where(k => !StandardInfoKeys.Contains(k) && !AutoInfoKeys.Contains(k))
             .ToList();
     }
@@ -98,26 +95,26 @@ public static class Sanitizer
     private static int CountAttachments(PdfDocument doc, PdfDictionary catalog)
     {
         int count = NameTreeSize(catalog.GetAsDictionary(PdfName.Names)?.GetAsDictionary(PdfName.EmbeddedFiles));
-        count += catalog.GetAsArray(PdfName.AF)?.Size() ?? 0;
-        for (int i = 1; i <= doc.GetNumberOfPages(); i++)
-            foreach (var annot in doc.GetPage(i).GetAnnotations())
-                if (PdfName.FileAttachment.Equals(annot.GetSubtype())) count++;
+        count += catalog.GetAsArray(PdfName.AF)?.Count ?? 0;
+        for (int i = 1; i <= doc.PageCount; i++)
+            foreach (var annot in doc.GetPage(i).Annotations)
+                if (PdfName.FileAttachment.Equals(annot.GetAsName(PdfName.Subtype))) count++;
         return count;
     }
 
     private static int CountAnnotations(PdfDocument doc)
     {
         int count = 0;
-        for (int i = 1; i <= doc.GetNumberOfPages(); i++)
-            foreach (var annot in doc.GetPage(i).GetAnnotations())
-                if (!KeepAnnotations.Any(k => k.Equals(annot.GetSubtype()))) count++;
+        for (int i = 1; i <= doc.PageCount; i++)
+            foreach (var annot in doc.GetPage(i).Annotations)
+                if (!KeepAnnotations.Any(k => k.Equals(annot.GetAsName(PdfName.Subtype)))) count++;
         return count;
     }
 
     private static int NameTreeSize(PdfDictionary? tree)
     {
         if (tree == null) return 0;
-        int count = (tree.GetAsArray(PdfName.Names)?.Size() ?? 0) / 2;
+        int count = (tree.GetAsArray(PdfName.Names)?.Count ?? 0) / 2;
         var kids = tree.GetAsArray(PdfName.Kids);
         if (kids != null)
             foreach (var kid in kids)
@@ -128,7 +125,7 @@ public static class Sanitizer
     private static int CountOutlines(PdfDictionary? node)
     {
         int count = 0;
-        var seen = new HashSet<PdfObject>();
+        var seen = new HashSet<PdfObject>(ReferenceEqualityComparer.Instance);
         while (node != null && seen.Add(node)) // guard against malformed cyclic /Next chains
         {
             count++;
@@ -143,10 +140,13 @@ public static class Sanitizer
     private static void StripMetadata(PdfDocument doc, PdfDictionary catalog, IEnumerable<string> customKeys)
     {
         // Clear the standard identifying fields, and drop any custom keys by name. Producer/dates
-        // are left for iText to re-stamp — they are tool data, not user-authored hidden info.
-        var di = doc.GetDocumentInfo();
-        di.SetAuthor("").SetTitle("").SetSubject("").SetKeywords("").SetCreator("");
-        foreach (var key in customKeys) di.SetMoreInfo(key, null);
+        // are left for the writer to re-stamp — they are tool data, not user-authored hidden info.
+        if (doc.Info is { } di)
+        {
+            foreach (var key in new[] { PdfName.Author, PdfName.Title, PdfName.Subject, PdfName.Keywords, PdfName.Creator })
+                di.Remove(key);
+            foreach (var key in customKeys) di.Remove(PdfName.Of(key));
+        }
         catalog.Remove(PdfName.Metadata); // XMP
     }
 
@@ -154,22 +154,22 @@ public static class Sanitizer
     {
         catalog.GetAsDictionary(PdfName.Names)?.Remove(PdfName.EmbeddedFiles);
         catalog.Remove(PdfName.AF);
-        for (int i = 1; i <= doc.GetNumberOfPages(); i++)
+        for (int i = 1; i <= doc.PageCount; i++)
         {
             var page = doc.GetPage(i);
-            foreach (var annot in page.GetAnnotations().ToList())
-                if (PdfName.FileAttachment.Equals(annot.GetSubtype()))
+            foreach (var annot in page.Annotations.ToList())
+                if (PdfName.FileAttachment.Equals(annot.GetAsName(PdfName.Subtype)))
                     page.RemoveAnnotation(annot);
         }
     }
 
     private static void StripAnnotations(PdfDocument doc)
     {
-        for (int i = 1; i <= doc.GetNumberOfPages(); i++)
+        for (int i = 1; i <= doc.PageCount; i++)
         {
             var page = doc.GetPage(i);
-            foreach (var annot in page.GetAnnotations().ToList())
-                if (!KeepAnnotations.Any(k => k.Equals(annot.GetSubtype())))
+            foreach (var annot in page.Annotations.ToList())
+                if (!KeepAnnotations.Any(k => k.Equals(annot.GetAsName(PdfName.Subtype))))
                     page.RemoveAnnotation(annot);
         }
     }
