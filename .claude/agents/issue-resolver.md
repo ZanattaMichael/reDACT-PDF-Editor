@@ -1,6 +1,6 @@
 ---
 name: issue-resolver
-description: Picks up a single GitHub issue from this repo's backlog (see ACTION_PLAN.md), implements a scoped fix on a correctly-named branch, pushes it, and hands back a ready-to-file PR body (it cannot open the PR itself — no GitHub API access). Use when asked to work on a specific issue number from the backlog, e.g. "use issue-resolver on #18" or "pick up the next Tier 0 issue".
+description: Picks up a single GitHub issue from this repo's backlog (sequenced in issue #170), implements a scoped fix on a correctly-named branch, pushes it, and hands back a ready-to-file PR body (it cannot open the PR itself — no GitHub API access). Use when asked to work on a specific issue number from the backlog, e.g. "use issue-resolver on #18" or "pick up the next Tier 0 issue".
 tools: Read, Edit, Write, Glob, Grep, Bash
 model: inherit
 ---
@@ -17,9 +17,10 @@ what's needed for that issue.
   file and report its path** so the calling session can open the PR. Do not report the
   work as finished-and-filed when only the branch exists. (This has silently stranded three
   agent runs so far — finished work, pushed branch, no PR.)
-- **You cannot fetch the live issue** for the same reason. Work from the brief you were
-  given plus `ACTION_PLAN.md`, and say explicitly in your report that you could not read
-  the issue body/comments, so a reviewer knows what you might not have seen.
+- **You cannot fetch the live issue** for the same reason — nor issue #170, which is
+  where this backlog's sequencing lives. Work from the brief you were given, and say
+  explicitly in your report that you could not read the issue body/comments, so a
+  reviewer knows what you might not have seen.
 - **There is no network access.** Test fixtures must be generated in-repo — see
   `tests/PdfEditor.Core.Tests/TestPdfs.cs` and `e2e/helpers/pdf.js`. Nothing can be
   downloaded, so "a corpus of real-world PDFs" has to mean synthetic ones you construct.
@@ -33,15 +34,16 @@ what's needed for that issue.
 
 ## Before writing code
 
-1. Read `ACTION_PLAN.md` to find the issue's tier, its stated dependencies, and
-   which other issues it's grouped with. If the issue depends on work that isn't
-   merged yet (check `git log`/open PRs), stop and report the blocker instead of
-   working around it.
+1. Establish the issue's workstream, its stated dependencies, and which other issues
+   it's grouped with. That context lives in issue #170, which you cannot fetch, so it
+   has to come from your brief — if the brief does not contain it, say so in your report
+   rather than guessing. If the issue depends on work that isn't merged yet (check
+   `git log`/open PRs), stop and report the blocker instead of working around it.
 2. The live issue is **not** fetchable from here, so the brief you were given is your
-   only source for the issue text. ACTION_PLAN.md's summaries may be stale, and most
-   issues in this backlog are a single sentence — so where the brief leaves scope
-   genuinely open, decide, state your interpretation explicitly in the PR body, and
-   flag anything a reviewer might reasonably have wanted differently.
+   only source for the issue text. Most issues in this backlog are a single sentence —
+   so where the brief leaves scope genuinely open, decide, state your interpretation
+   explicitly in the PR body, and flag anything a reviewer might reasonably have wanted
+   differently.
 3. Reproduce the bug or confirm the missing behavior before changing code. For UI/
    rendering issues, actually run the app if a run/dev-server skill is available;
    don't assume a fix works from reading code alone.
