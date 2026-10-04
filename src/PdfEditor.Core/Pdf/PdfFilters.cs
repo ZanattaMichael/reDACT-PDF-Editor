@@ -543,7 +543,7 @@ internal static class PdfFilters
             }
             previous = entry;
             int next = table.Count + (earlyChange == 0 ? 0 : 1);
-            codeLength = next > 2048 ? 12 : next > 1024 ? 11 : next > 512 ? 10 : 9;
+            codeLength = next >= 2048 ? 12 : next >= 1024 ? 11 : next >= 512 ? 10 : 9;
         }
         return output.ToArray();
     }

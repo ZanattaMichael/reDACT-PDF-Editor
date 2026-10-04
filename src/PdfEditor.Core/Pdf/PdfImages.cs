@@ -48,7 +48,18 @@ internal static class PdfImages
     public static SKBitmap? DecodeBitmap(byte[] encoded)
     {
         if (TiffDecoder.IsTiff(encoded)) return TiffDecoder.Decode(encoded);
-        return SKBitmap.Decode(encoded);
+        return SkiaDecode(encoded);
+    }
+
+    /// <summary>
+    /// Decodes with SkiaSharp, or returns null for data it has no codec for. (SKBitmap.Decode
+    /// throws ArgumentNullException in that case, which reached users as a meaningless error.)
+    /// </summary>
+    private static SKBitmap? SkiaDecode(byte[] encoded)
+    {
+        using var data = SKData.CreateCopy(encoded);
+        using var codec = SKCodec.Create(data);
+        return codec == null ? null : SKBitmap.Decode(codec);
     }
 
     /// <summary>An image XObject holding <paramref name="bitmap"/> as RGB, plus an /SMask when it is translucent.</summary>
@@ -172,7 +183,7 @@ internal static class PdfImages
             byte[] data = decode();
             if (codec is "DCTDecode" or "DCT")
             {
-                var jpeg = SKBitmap.Decode(data);
+                var jpeg = SkiaDecode(data);
                 if (jpeg == null) failure = "the JPEG data could not be decoded";
                 return jpeg;
             }
