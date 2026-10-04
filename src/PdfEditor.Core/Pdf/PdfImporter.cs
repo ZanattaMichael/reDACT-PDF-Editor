@@ -26,6 +26,17 @@ internal sealed class PdfImporter
     /// yet in the target's page tree — the caller places them.
     /// </summary>
     public static List<PdfDictionary> CopyPages(PdfDocument source, IReadOnlyList<int> pageNumbers, PdfDocument target)
+        => CopyPages(source, pageNumbers, target, outlines: null);
+
+    /// <summary>
+    /// As <see cref="CopyPages(PdfDocument, IReadOnlyList{int}, PdfDocument)"/>, also copying the
+    /// source's bookmarks into <paramref name="outlines"/> (the top-level items, unlinked; see
+    /// <see cref="LinkOutlines"/>). Only bookmarks that lead to a copied page are kept, plus the
+    /// parents needed to reach them — a bookmark to a dropped page would otherwise be a dead entry
+    /// naming exactly what was removed.
+    /// </summary>
+    public static List<PdfDictionary> CopyPages(PdfDocument source, IReadOnlyList<int> pageNumbers,
+        PdfDocument target, List<OutlineItem>? outlines)
     {
         var importer = new PdfImporter(target);
         foreach (var page in source.Pages) importer._sourcePages.Add(page.Dictionary);
@@ -37,8 +48,138 @@ internal sealed class PdfImporter
             var copy = importer.CopyPage(sourcePage);
             result.Add(copy);
         }
+        if (outlines != null)
+            outlines.AddRange(importer.CopyOutlines(source));
         importer.Drain();
         return result;
+    }
+
+    // ------------------------------------------------------------------ outlines
+
+    /// <summary>A copied bookmark, before it is linked into the target's outline tree.</summary>
+    internal sealed record OutlineItem(PdfDictionary Dictionary, bool Open, List<OutlineItem> Children);
+
+    /// <summary>Bound on bookmarks copied per document, against a hostile or cyclic tree.</summary>
+    private const int MaxOutlineItems = 100_000;
+
+    /// <summary>Bound on bookmark nesting, so a pathological tree cannot recurse the stack away.</summary>
+    private const int MaxOutlineDepth = 64;
+
+    private List<OutlineItem> CopyOutlines(PdfDocument source)
+    {
+        var first = source.Catalog?.GetAsDictionary(PdfName.Outlines)?.GetAsDictionary(PdfName.First);
+        var visited = new HashSet<PdfObject>(ReferenceEqualityComparer.Instance);
+        var named = new Lazy<Dictionary<string, PdfObject>>(() => NamedDestinations(source));
+        return CopyOutlineSiblings(first, visited, named, 0);
+    }
+
+    private List<OutlineItem> CopyOutlineSiblings(PdfDictionary? item, HashSet<PdfObject> visited,
+        Lazy<Dictionary<string, PdfObject>> named, int depth)
+    {
+        var result = new List<OutlineItem>();
+        for (; item != null && depth < MaxOutlineDepth && visited.Count < MaxOutlineItems && visited.Add(item);
+             item = item.GetAsDictionary(PdfName.Next))
+        {
+            var children = CopyOutlineSiblings(item.GetAsDictionary(PdfName.First), visited, named, depth + 1);
+            var destination = CopiedDestination(item, named);
+            if (destination == null && children.Count == 0) continue;
+
+            var copy = new PdfDictionary();
+            _target.MakeIndirect(copy);
+            copy.Put(PdfName.Title, item.Get(PdfName.Title) is PdfString title
+                ? new PdfString((byte[])title.Bytes.Clone(), title.IsHex) : PdfString.FromText(""));
+            if (destination != null) copy.Put(PdfName.Dest, destination);
+            foreach (var key in new[] { PdfName.Of("C"), PdfName.F })
+                if (item.Get(key) is PdfArray or PdfNumber) copy.Put(key, CopyDirect(item.Get(key)!, 0));
+            bool open = (item.GetAsNumber(PdfName.Count)?.Value ?? 0) >= 0;
+            result.Add(new OutlineItem(copy, open, children));
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// The bookmark's destination as an explicit array on a copied page, or null when it leads
+    /// anywhere else: a page that was not copied, another file, a script. Named destinations are
+    /// resolved here, so the copy does not need the source's name tree.
+    /// </summary>
+    private PdfArray? CopiedDestination(PdfDictionary item, Lazy<Dictionary<string, PdfObject>> named)
+    {
+        PdfObject? dest = item.Get(PdfName.Dest);
+        if (dest == null && item.GetAsDictionary(PdfName.A) is { } action
+            && PdfName.GoTo.Equals(action.GetAsName(PdfName.S)))
+            dest = action.Get(PdfName.Of("D"));
+
+        for (int hops = 0; hops < 4 && dest is PdfName or PdfString or PdfDictionary; hops++)
+        {
+            dest = dest switch
+            {
+                PdfName n => named.Value.GetValueOrDefault("/" + n.Value),
+                PdfString str => named.Value.GetValueOrDefault(str.ToUnicodeString()),
+                PdfDictionary d => d.Get(PdfName.Of("D")),
+                _ => null,
+            };
+        }
+
+        if (dest is not PdfArray array || array.Count == 0) return null;
+        var page = array.Get(0);
+        if (page == null || !_pageCopies.TryGetValue(page, out var pageCopy)) return null;
+        var copy = new PdfArray { pageCopy };
+        for (int i = 1; i < array.Count; i++)
+            copy.Add(array.Get(i) is PdfName or PdfNumber or PdfNull ? CopyDirect(array.Get(i)!, 0) : PdfNull.Instance);
+        return copy;
+    }
+
+    /// <summary>
+    /// The document's named destinations: the PDF 1.2+ <c>/Names /Dests</c> tree (keyed by
+    /// string) and the PDF 1.1 <c>/Dests</c> dictionary (keyed by name, prefixed with "/" so the
+    /// two cannot collide).
+    /// </summary>
+    private static Dictionary<string, PdfObject> NamedDestinations(PdfDocument source)
+    {
+        var result = new Dictionary<string, PdfObject>(StringComparer.Ordinal);
+        var catalog = source.Catalog;
+        if (catalog?.GetAsDictionary(PdfName.Names)?.GetAsDictionary(PdfName.Of("Dests")) is { } tree)
+            foreach (var (key, value) in PdfNameTree.Read(tree))
+                result.TryAdd(key.ToUnicodeString(), value);
+        if (catalog?.GetAsDictionary(PdfName.Of("Dests")) is { } legacy)
+            foreach (var key in legacy.Keys)
+                if (legacy.Get(key) is { } value) result.TryAdd("/" + key.Value, value);
+        return result;
+    }
+
+    /// <summary>
+    /// Links copied bookmarks into <paramref name="target"/>'s outline tree, replacing any it had.
+    /// Does nothing when there are none, so a document without bookmarks gains no empty tree.
+    /// </summary>
+    public static void LinkOutlines(PdfDocument target, IReadOnlyList<OutlineItem> items)
+    {
+        if (items.Count == 0) return;
+        var root = new PdfDictionary();
+        root.Put(PdfName.Type, PdfName.Outlines);
+        target.MakeIndirect(root);
+        root.Put(PdfName.Count, new PdfNumber(Link(root, items)));
+        target.Catalog!.Put(PdfName.Outlines, root);
+    }
+
+    /// <summary>Links <paramref name="items"/> under <paramref name="parent"/>; returns how many are visible.</summary>
+    private static int Link(PdfDictionary parent, IReadOnlyList<OutlineItem> items)
+    {
+        int visible = 0;
+        for (int i = 0; i < items.Count; i++)
+        {
+            var dict = items[i].Dictionary;
+            dict.Put(PdfName.Parent, parent);
+            if (i > 0) dict.Put(PdfName.Prev, items[i - 1].Dictionary);
+            if (i + 1 < items.Count) dict.Put(PdfName.Next, items[i + 1].Dictionary);
+            visible++;
+            if (items[i].Children.Count == 0) continue;
+            int below = Link(dict, items[i].Children);
+            dict.Put(PdfName.Count, new PdfNumber(items[i].Open ? below : -below));
+            if (items[i].Open) visible += below;
+        }
+        parent.Put(PdfName.First, items[0].Dictionary);
+        parent.Put(PdfName.Of("Last"), items[^1].Dictionary);
+        return visible;
     }
 
     private PdfDictionary CopyPage(PdfPage page)

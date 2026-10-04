@@ -28,8 +28,10 @@ public static class PageTools
                 throw new ArgumentOutOfRangeException(nameof(order), $"Page {n} does not exist.");
 
         var target = PdfDocument.CreateNew();
-        var pages = PdfIo.Guarded("copying pages", () => PdfImporter.CopyPages(source, order, target));
+        var outlines = new List<PdfImporter.OutlineItem>();
+        var pages = PdfIo.Guarded("copying pages", () => PdfImporter.CopyPages(source, order, target, outlines));
         target.SetPages(pages);
+        PdfImporter.LinkOutlines(target, outlines);
         return EditResult.Of(PdfIo.Save(target));
     }
 

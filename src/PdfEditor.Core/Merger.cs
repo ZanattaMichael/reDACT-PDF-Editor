@@ -2,7 +2,7 @@ using PdfEditor.Core.Pdf;
 
 namespace PdfEditor.Core;
 
-/// <summary>Concatenates multiple PDF documents into one.</summary>
+/// <summary>Concatenates multiple PDF documents into one, bookmarks included.</summary>
 public static class Merger
 {
     public static byte[] Merge(IReadOnlyList<byte[]> pdfs, IReadOnlyList<string?>? passwords = null)
@@ -12,14 +12,16 @@ public static class Merger
 
         var target = PdfDocument.CreateNew();
         var pages = new List<PdfDictionary>();
+        var outlines = new List<PdfImporter.OutlineItem>();
         for (int i = 0; i < pdfs.Count; i++)
         {
             string? password = passwords != null && i < passwords.Count ? passwords[i] : null;
             var source = PdfIo.OpenReadOnly(pdfs[i], password);
             var numbers = Enumerable.Range(1, source.PageCount).ToList();
-            pages.AddRange(PdfIo.Guarded("copying pages", () => PdfImporter.CopyPages(source, numbers, target)));
+            pages.AddRange(PdfIo.Guarded("copying pages", () => PdfImporter.CopyPages(source, numbers, target, outlines)));
         }
         target.SetPages(pages);
+        PdfImporter.LinkOutlines(target, outlines);
         return PdfIo.Save(target);
     }
 }

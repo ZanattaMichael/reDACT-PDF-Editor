@@ -262,7 +262,17 @@ internal sealed class ContentStreamEditor : ContentProcessor
                 }
                 var cloned = PdfStream.FromFile(stream, stream.RawData);
                 _document.MakeIndirect(cloned);
-                var formResources = cloned.GetAsDictionary(PdfName.Resources) ?? _editResources;
+                var formResources = _editResources;
+                if (cloned.GetAsDictionary(PdfName.Resources) is { } own)
+                {
+                    // The clone gets its own resource dictionaries: editing it registers new
+                    // XObjects there, and those must not appear in the original form, which other
+                    // pages may still draw.
+                    formResources = ShallowCopy(own);
+                    if (own.GetAsDictionary(PdfName.XObject) is { } xobjects)
+                        formResources.Put(PdfName.XObject, ShallowCopy(xobjects));
+                    cloned.Put(PdfName.Resources, formResources);
+                }
                 var inner = Create(TransformRegionsInto(full), _document, _warnings, _depth + 1, _kinds);
                 inner.EditFormStream(cloned, formResources);
                 RemovedAnything |= inner.RemovedAnything;
@@ -289,6 +299,13 @@ internal sealed class ContentStreamEditor : ContentProcessor
     }
 
     // ------------------------------------------------------------- plumbing
+
+    private static PdfDictionary ShallowCopy(PdfDictionary source)
+    {
+        var copy = new PdfDictionary();
+        foreach (var key in source.Keys) copy.Put(key, source.GetRaw(key));
+        return copy;
+    }
 
     private bool IntersectsAnyRegion(PdfRect r) => _regions.Any(reg => Overlaps(reg, r));
 
