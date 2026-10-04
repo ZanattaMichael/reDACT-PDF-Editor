@@ -33,6 +33,8 @@ jobs:
         # A dedicated step as well as a node --test case, so the failure message points straight
         # at the offending file:line rather than at an assertion.
         run: node scripts/check-innerhtml.mjs
+      - name: Release-candidate version rule
+        run: ./scripts/test-next-version.sh
       - name: Linux packaging tooling
         run: sudo apt-get update -qq && sudo apt-get install -y -qq rpm libarchive-tools zstd
       - name: Linux package registration guard

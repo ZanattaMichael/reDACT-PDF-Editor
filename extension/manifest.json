@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "reDACT PDF Editor",
-  "version": "2.0.2",
+  "version": "3.0.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAnCJtKqFQacaY0uHvI7We7kYlDq+uL4gX3nRSnSKAOKlOO5tyOzvSc4D5mCMb6qIDBBOzwiOZR2MBizmMTY/cqRf/1wZALr0g4+ZqNFiUpZYXDlLeiuR8KgjTU+25qYPFJQuuGlhnUGu4P43lYl6YRDOb+kUFjRyKRcZ4emCu93VLm3/hS1DfWjz65HT0kp8sGfwGBnTnLhJqGiHzavQmTFFvXp4c3Zu/ndx4XRlyp9f3dY3w0F3f5IQCLhsRLwt1zOpWcrYYij9heqsfZk6Pom8D+FEDCoIfjmat75Xn6gP5CDx6WItsrmi2xZOifMibCxzcDoc/IoIRHCczFZ154QIDAQAB",
   "description": "Edit text, truly redact, merge, OCR, sign and encrypt PDFs in your browser. Processed locally \u2014 files never leave your PC.",
   "minimum_chrome_version": "116",

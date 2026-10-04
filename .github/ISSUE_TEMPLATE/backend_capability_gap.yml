@@ -1,18 +1,17 @@
 name: Backend capability gap
-description: A capability that does not carry across a PDF backend change, tracked against the iText decoupling work (#115).
+description: Something 2.x did with iText that the 3.0 in-house PDF engine does not, or does differently (#170).
 title: "Backend gap: "
 labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
       value: |
-        Use this for a capability the current backend provides and a candidate backend does not —
-        or provides differently enough that the behaviour, the report shape, or the host's JSON
-        contract would change.
+        Use this for a capability reDACT 2.x provided through iText that the 3.0 engine
+        (`src/PdfEditor.Core/Pdf/`) does not — or provides differently enough that the behaviour,
+        the report shape, or the host's JSON contract changed.
 
-        Background: **#115** (should the engine change) and **#116** (the abstraction seam).
-        `docs/backend-portability.md` records the structural blockers and the workarounds that
-        already exist for them.
+        Background: **#115** (whether to change the engine), **#170** (the 3.0 plan), and
+        `docs/RELEASE_NOTES_3.0.0.md`, which lists the differences that are deliberate.
 
         A gap is only worth filing if a user could notice it. "The code has to be rewritten" is
         migration work, not a capability gap.
