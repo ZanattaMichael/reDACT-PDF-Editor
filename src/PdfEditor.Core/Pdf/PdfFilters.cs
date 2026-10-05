@@ -576,6 +576,7 @@ internal static class PdfFilters
     {
         var output = new MemoryStream(data.Length);
         Span<int> group = stackalloc int[5];
+        ReadOnlySpan<byte> zeros = stackalloc byte[4]; // once: a stackalloc per 'z' would overflow the stack
         int count = 0;
         int i = 0;
         if (data.Length >= 2 && data[0] == '<' && data[1] == '~') i = 2; // optional Adobe prefix
@@ -587,7 +588,7 @@ internal static class PdfFilters
             if (b == 'z')
             {
                 if (count != 0) throw new PdfFormatException("The ASCII85 data has a 'z' inside a group: the stream is corrupt.");
-                output.Write(stackalloc byte[4]);
+                output.Write(zeros);
                 continue;
             }
             if (b < '!' || b > 'u')

@@ -135,6 +135,17 @@ public class FilterTests
         Assert.Equal(data, Decode(Encoding.ASCII.GetBytes("<~" + encoded + "~>"), PdfName.Of("A85")));
     }
 
+    [Fact]
+    public void Ascii85_MillionsOfZeroGroups_DecodeWithoutExhaustingTheStack()
+    {
+        // Each 'z' is four zero bytes. Allocating them on the stack per character would overflow
+        // it, which .NET cannot catch: the whole host would die on one crafted stream.
+        byte[] encoded = Enumerable.Repeat((byte)'z', 2_000_000).Concat("~>"u8.ToArray()).ToArray();
+        byte[] decoded = Decode(encoded, PdfName.Of("ASCII85Decode"));
+        Assert.Equal(8_000_000, decoded.Length);
+        Assert.All(decoded.Take(16), b => Assert.Equal(0, b));
+    }
+
     [Theory]
     [InlineData("ab{de~>", "alphabet")]
     [InlineData("abzde~>", "'z' inside a group")]

@@ -426,10 +426,16 @@ internal static class AcroForm
         if (form == null) return 0;
         var fields = TerminalFields(doc);
         var drawings = new Dictionary<PdfPage, ContentBuilder>();
+        bool needAppearances = form.GetAsBool(PdfName.NeedAppearances) == true;
         foreach (var field in fields)
         {
             foreach (var widget in field.Widgets)
             {
+                // A text or choice field that leaves its appearance to the viewer (no /AP, or
+                // /NeedAppearances) has to have one built now, or flattening would drop its value.
+                if (field.FieldType is "Tx" or "Ch" && (needAppearances || NormalAppearance(widget) == null))
+                    RegenerateText(doc, form, field, widget);
+
                 int pageNumber = PageOf(doc, widget);
                 if (pageNumber == 0) continue;
                 var page = doc.GetPage(pageNumber);

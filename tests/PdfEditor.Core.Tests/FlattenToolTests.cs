@@ -49,6 +49,29 @@ public class FlattenToolTests
     }
 
     [Fact]
+    public void Flatten_Forms_BuildsTheAppearanceOfAFieldThatHasNone()
+    {
+        // A field with a value but no /AP, relying on /NeedAppearances — as many form generators
+        // write them. Flattening must still put the value on the page.
+        byte[] pdf = Fuzz.RawPdf.Build(new[]
+        {
+            "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R] /DA (/Helv 0 Tf 0 g) /NeedAppearances true >> >>",
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Annots [4 0 R] /Resources << /Font << /Helv 5 0 R >> >> >>",
+            "<< /FT /Tx /T (fullName) /V (Ada Lovelace) /Type /Annot /Subtype /Widget /Rect [100 700 300 724] /P 3 0 R /DA (/Helv 12 Tf 0 g) >>",
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        }.Select(o => System.Text.Encoding.ASCII.GetBytes(o)).ToList(), "/Root 1 0 R");
+
+        var result = FlattenTool.Flatten(pdf, FlattenTool.Mode.Forms);
+
+        Assert.Equal(1, result.FormFieldsFlattened);
+        Assert.Equal(0, AnnotationCount(result.Pdf));
+        Assert.Contains("Ada Lovelace", TestPdfAssert.ExtractText(result.Pdf));
+        bool inked = Enumerable.Range(0, 40).Any(i => TestPdfAssert.PixelAt(result.Pdf, 1, 104 + i * 2, 711, 144).Red < 128);
+        Assert.True(inked, "the flattened value is not drawn in the field's rectangle");
+    }
+
+    [Fact]
     public void Flatten_AnnotationsOnly_BakesTheAppearance_AndRemovesTheAnnotation()
     {
         byte[] pdf = WithSquareAnnotation(new PdfRect(100, 600, 80, 50));
