@@ -22,7 +22,7 @@ page 1: media=[0 0 595 842] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == redact ==
-bytes: ~2560
+bytes: ~2048
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -33,32 +33,17 @@ page 1: media=[0 0 595 842] crop=none rotate=0 annots=0 group=none
   typeset: Helvetica@12.0
   ops: BTx1 Dox1 ETx1 Qx2 Tdx1 Tfx1 Tjx1 cmx1 fx1 qx2 rex1 rgx1
   font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
-  xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
-    ops: Dox1 Qx1 qx1
-    xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
-      ops: Dox1 Qx1 qx1
-      xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
-        ops: BTx1 ETx1 Tdx1 Tfx1 Tjx1
-        font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
   xobject Fm2: subtype=Form bbox=[0 0 200 120] matrix=none group=none
     ops: Dox1 Qx1 qx1
-    xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
-      ops: Dox1 Qx1 qx1
-      xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
-        ops: BTx1 ETx1 Tdx1 Tfx1 Tjx1
-        font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
     xobject Fm2: subtype=Form bbox=[0 0 200 120] matrix=none group=none
       ops: Dox1 Qx1 qx1
-      xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
-        ops: BTx1 ETx1 Tdx1 Tfx1 Tjx1
-        font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
       xobject Fm2: subtype=Form bbox=[0 0 200 120] matrix=none group=none
         ops: BTx1 ETx1 TJx1 Tdx1 Tfx1
         font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
 acroform: none
 validation: clean
 == replace-region-text ==
-bytes: ~2816
+bytes: ~2304
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -70,25 +55,10 @@ page 1: media=[0 0 595 842] crop=none rotate=0 annots=0 group=none
   ops: BTx2 Dox1 ETx2 Qx2 Tdx2 Tfx2 Tjx2 cmx1 qx2
   font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
   font F2: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
-  xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
-    ops: Dox1 Qx1 qx1
-    xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
-      ops: Dox1 Qx1 qx1
-      xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
-        ops: BTx1 ETx1 Tdx1 Tfx1 Tjx1
-        font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
   xobject Fm2: subtype=Form bbox=[0 0 200 120] matrix=none group=none
     ops: Dox1 Qx1 qx1
-    xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
-      ops: Dox1 Qx1 qx1
-      xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
-        ops: BTx1 ETx1 Tdx1 Tfx1 Tjx1
-        font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
     xobject Fm2: subtype=Form bbox=[0 0 200 120] matrix=none group=none
       ops: Dox1 Qx1 qx1
-      xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
-        ops: BTx1 ETx1 Tdx1 Tfx1 Tjx1
-        font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
       xobject Fm2: subtype=Form bbox=[0 0 200 120] matrix=none group=none
         ops: BTx1 ETx1 TJx1 Tdx1 Tfx1
         font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0

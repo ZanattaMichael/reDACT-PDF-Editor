@@ -19,6 +19,25 @@ public static class TestPdfAssert
     }
 
     /// <summary>
+    /// Whether <paramref name="text"/> occurs anywhere in the saved file: in its raw bytes, or in the
+    /// decoded data of any stream it holds, whether or not anything draws that stream. Text extraction
+    /// only sees what a page draws, so it can't tell redacted content that is gone from content that
+    /// is merely no longer drawn.
+    /// </summary>
+    public static bool AppearsAnywhere(byte[] pdf, string text)
+    {
+        byte[] needle = System.Text.Encoding.Latin1.GetBytes(text);
+        if (pdf.AsSpan().IndexOf(needle) >= 0) return true;
+        using var doc = new PdfDocument(new PdfReader(new MemoryStream(pdf)));
+        for (int i = 1; i < doc.GetNumberOfPdfObjects(); i++)
+        {
+            if (doc.GetPdfObject(i) is PdfStream stream && stream.GetBytes().AsSpan().IndexOf(needle) >= 0)
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
     /// The (base font name, type size) of every text-showing run on a page, read from the rendered
     /// graphics state.
     /// <para>

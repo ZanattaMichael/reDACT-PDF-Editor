@@ -98,11 +98,14 @@ operator:
   form with per-glyph granularity: glyphs inside a redaction region are replaced by an
   equivalent-width kerning displacement, so the hidden text is gone from the file while
   surrounding words keep their exact positions.
-- **Images** — image XObjects fully inside a region are dropped; partially covered
-  images are decoded, their covered pixels painted black, and re-encoded (the original
-  pixel data is destroyed). Inline images touching a region are dropped.
+- **Images** — image XObjects fully inside a region are dropped, resource entry and
+  all; partially covered images are decoded, their covered pixels painted black, and
+  re-encoded (the original pixel data is destroyed). Inline images touching a region are
+  dropped.
 - **Form XObjects** — recursively edited on a cloned copy with the regions transformed
-  into form space, so shared forms on other pages are unaffected.
+  into form space, so shared forms on other pages are unaffected. The edited page or
+  form then stops naming the original, so the writer doesn't save it unless something
+  else still references it.
 - **Annotations** — links/widgets intersecting a region are removed.
 
 Then an opaque black box is painted on top. Text extraction on the output confirms the
