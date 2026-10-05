@@ -165,9 +165,7 @@ internal sealed class LocationTextExtraction : IContentListener
             for (int b = 0; b < chunks.Count && !attached; b++)
             {
                 if (b == m || chunks[b].Location.IsZeroLength || !ContainsMark(chunks[b].Location, mark.Location)) continue;
-                var target = m < b ? before : after;
-                if (!target.TryGetValue(chunks[b], out var list)) target[chunks[b]] = list = new List<TextChunk>();
-                list.Add(mark);
+                Attach(m < b ? before : after, chunks[b], mark);
                 attached = true;
             }
             if (!attached) toSort.Add(mark);
@@ -182,6 +180,12 @@ internal sealed class LocationTextExtraction : IContentListener
             if (after.TryGetValue(chunk, out var a)) result.AddRange(a);
         }
         return result;
+    }
+
+    private static void Attach(Dictionary<TextChunk, List<TextChunk>> marks, TextChunk to, TextChunk mark)
+    {
+        if (!marks.TryGetValue(to, out var list)) marks[to] = list = new List<TextChunk>();
+        list.Add(mark);
     }
 
     private static bool ContainsMark(TextChunkLocation baseLocation, TextChunkLocation mark) =>

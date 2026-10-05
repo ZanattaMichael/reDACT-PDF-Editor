@@ -89,7 +89,8 @@ internal static class AcroForm
             if (depth > 64 || !seen.Add(node)) return;
             string? partial = node.GetText(PdfName.T);
             if (partial == null && parentName != null) return; // a widget, not a field
-            string name = parentName == null ? partial ?? "" : partial == null ? parentName : parentName + "." + partial;
+            // Past the check above, a node under a parent always has its own partial name.
+            string name = parentName == null ? partial ?? "" : parentName + "." + partial;
             result.Add((name, node));
             if (node.GetAsArray(PdfName.Kids) is { } kids)
                 foreach (var kid in kids)

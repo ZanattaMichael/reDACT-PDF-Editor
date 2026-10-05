@@ -213,7 +213,7 @@ internal sealed class ContentStreamEditor : ContentProcessor
         var stream = name == null ? null : Resources?.GetAsDictionary(PdfName.XObject)?.GetAsStream(name);
         var subtype = stream?.GetAsName(PdfName.Subtype);
 
-        if (stream == null || name == null)
+        if (name == null || stream == null)
         {
             Write(op);
             return;
