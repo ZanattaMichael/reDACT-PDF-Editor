@@ -191,42 +191,49 @@ internal sealed partial class PdfDocument
         {
             if (!lexer.Next()) return null;
             if (lexer.TokenType == PdfTokenType.Keyword && lexer.Text == "trailer") break;
-            if (lexer.TokenType != PdfTokenType.Number) return null;
-            long start = (long)lexer.NumberValue;
-            if (!lexer.Next() || lexer.TokenType != PdfTokenType.Number) return null;
-            long count = (long)lexer.NumberValue;
-            if (start < 0 || count < 0 || count > 10_000_000 || start + count > int.MaxValue) return null;
-
-            for (long i = 0; i < count; i++)
-            {
-                if (!lexer.Next() || lexer.TokenType != PdfTokenType.Number) return null;
-                long entryOffset = (long)lexer.NumberValue;
-                if (!lexer.Next() || lexer.TokenType != PdfTokenType.Number) return null;
-                int generation = (int)Math.Min(lexer.NumberValue, 65535);
-                if (!lexer.Next() || lexer.TokenType != PdfTokenType.Keyword) return null;
-                int number = (int)(start + i);
-                // Older sections are read after newer ones: an entry already present is newer.
-                if (_xref.ContainsKey(number)) continue;
-                if (lexer.Text == "n") _xref[number] = new XrefEntry(1, entryOffset, generation, 0, 0);
-                else if (lexer.Text == "f") _xref[number] = new XrefEntry(0, 0, generation, 0, 0);
-                else return null;
-            }
+            if (!ReadXrefSubsection(lexer)) return null;
         }
         var parser = new PdfObjectParser(lexer, this);
         return parser.ParseObject() as PdfDictionary;
     }
 
+    /// <summary>Reads one subsection: "start count", then count entries. False when it is malformed.</summary>
+    private bool ReadXrefSubsection(PdfLexer lexer)
+    {
+        if (lexer.TokenType != PdfTokenType.Number) return false;
+        long start = (long)lexer.NumberValue;
+        if (!NextIs(lexer, PdfTokenType.Number)) return false;
+        long count = (long)lexer.NumberValue;
+        if (start < 0 || count < 0 || count > 10_000_000 || start + count > int.MaxValue) return false;
+
+        for (long i = 0; i < count; i++)
+            if (!ReadXrefTableEntry(lexer, (int)(start + i))) return false;
+        return true;
+    }
+
+    /// <summary>Reads one "offset generation n|f" entry. False when it is malformed.</summary>
+    private bool ReadXrefTableEntry(PdfLexer lexer, int number)
+    {
+        if (!NextIs(lexer, PdfTokenType.Number)) return false;
+        long entryOffset = (long)lexer.NumberValue;
+        if (!NextIs(lexer, PdfTokenType.Number)) return false;
+        int generation = (int)Math.Min(lexer.NumberValue, 65535);
+        if (!NextIs(lexer, PdfTokenType.Keyword)) return false;
+        // Older sections are read after newer ones: an entry already present is newer.
+        if (_xref.ContainsKey(number)) return true;
+        if (lexer.Text == "n") _xref[number] = new XrefEntry(1, entryOffset, generation, 0, 0);
+        else if (lexer.Text == "f") _xref[number] = new XrefEntry(0, 0, generation, 0, 0);
+        else return false;
+        return true;
+    }
+
+    private static bool NextIs(PdfLexer lexer, PdfTokenType type) => lexer.Next() && lexer.TokenType == type;
+
     private PdfDictionary? ReadXrefStream(int offset)
     {
         var (obj, _) = ParseIndirectObjectAt(offset, expectedNumber: null, decrypt: false);
         if (obj is not PdfStream stream || !PdfName.XRef.Equals(stream.GetAsName(PdfName.Type))) return null;
-
-        var w = stream.GetAsArray(PdfName.W);
-        if (w == null || w.Count < 3) return null;
-        int w0 = w.GetAsNumber(0)?.IntValue() ?? 0, w1 = w.GetAsNumber(1)?.IntValue() ?? 0, w2 = w.GetAsNumber(2)?.IntValue() ?? 0;
-        if (w0 is < 0 or > 8 || w1 is < 0 or > 8 || w2 is < 0 or > 8) return null;
-        int rowSize = w0 + w1 + w2;
-        if (rowSize == 0) return null;
+        if (XrefFieldWidths(stream) is not { } widths) return null;
 
         byte[] rows;
         try
@@ -238,6 +245,27 @@ internal sealed partial class PdfDocument
             return null;
         }
 
+        ReadXrefStreamRows(rows, XrefRanges(stream), widths);
+        // The stream dictionary doubles as the trailer.
+        var trailer = new PdfDictionary();
+        foreach (var key in stream.Keys) trailer.Put(key, stream.GetRaw(key));
+        return trailer;
+    }
+
+    /// <summary>The /W field widths; null when they are missing, out of range, or all zero.</summary>
+    private static (int W0, int W1, int W2)? XrefFieldWidths(PdfStream stream)
+    {
+        var w = stream.GetAsArray(PdfName.W);
+        if (w == null || w.Count < 3) return null;
+        int w0 = w.GetAsNumber(0)?.IntValue() ?? 0, w1 = w.GetAsNumber(1)?.IntValue() ?? 0, w2 = w.GetAsNumber(2)?.IntValue() ?? 0;
+        if (w0 is < 0 or > 8 || w1 is < 0 or > 8 || w2 is < 0 or > 8) return null;
+        if (w0 + w1 + w2 == 0) return null;
+        return (w0, w1, w2);
+    }
+
+    /// <summary>The object number ranges the rows cover: /Index, or every object up to /Size.</summary>
+    private static List<(long Start, long Count)> XrefRanges(PdfStream stream)
+    {
         int size = stream.GetAsInt(PdfName.Size) ?? 0;
         var index = stream.GetAsArray(PdfName.Index);
         var ranges = new List<(long Start, long Count)>();
@@ -246,37 +274,44 @@ internal sealed partial class PdfDocument
                 ranges.Add(((long)index.GetNumber(i), (long)index.GetNumber(i + 1)));
         else
             ranges.Add((0, size));
+        return ranges;
+    }
 
+    private void ReadXrefStreamRows(byte[] rows, List<(long Start, long Count)> ranges, (int W0, int W1, int W2) widths)
+    {
+        int rowSize = widths.W0 + widths.W1 + widths.W2;
         int pos = 0;
         foreach (var (start, count) in ranges)
         {
             for (long i = 0; i < count && pos + rowSize <= rows.Length; i++, pos += rowSize)
             {
-                long Field(int at, int width, long fallback)
-                {
-                    if (width == 0) return fallback;
-                    long v = 0;
-                    for (int k = 0; k < width; k++) v = v << 8 | rows[at + k];
-                    return v;
-                }
-                long type = Field(pos, w0, 1);
-                long f2 = Field(pos + w0, w1, 0);
-                long f3 = Field(pos + w0 + w1, w2, 0);
                 long number = start + i;
                 if (number < 0 || number > int.MaxValue || _xref.ContainsKey((int)number)) continue;
-                _xref[(int)number] = type switch
-                {
-                    0 => new XrefEntry(0, 0, (int)Math.Min(f3, 65535), 0, 0),
-                    1 => new XrefEntry(1, f2, (int)Math.Min(f3, 65535), 0, 0),
-                    2 => new XrefEntry(2, 0, 0, (int)Math.Min(f2, int.MaxValue), (int)Math.Min(f3, int.MaxValue)),
-                    _ => new XrefEntry(0, 0, 0, 0, 0), // unknown types are free entries (§7.5.8.3)
-                };
+                _xref[(int)number] = XrefStreamEntry(rows, pos, widths);
             }
         }
-        // The stream dictionary doubles as the trailer.
-        var trailer = new PdfDictionary();
-        foreach (var key in stream.Keys) trailer.Put(key, stream.GetRaw(key));
-        return trailer;
+    }
+
+    private static XrefEntry XrefStreamEntry(byte[] rows, int pos, (int W0, int W1, int W2) widths)
+    {
+        long type = XrefField(rows, pos, widths.W0, 1);
+        long f2 = XrefField(rows, pos + widths.W0, widths.W1, 0);
+        long f3 = XrefField(rows, pos + widths.W0 + widths.W1, widths.W2, 0);
+        return type switch
+        {
+            0 => new XrefEntry(0, 0, (int)Math.Min(f3, 65535), 0, 0),
+            1 => new XrefEntry(1, f2, (int)Math.Min(f3, 65535), 0, 0),
+            2 => new XrefEntry(2, 0, 0, (int)Math.Min(f2, int.MaxValue), (int)Math.Min(f3, int.MaxValue)),
+            _ => new XrefEntry(0, 0, 0, 0, 0), // unknown types are free entries (§7.5.8.3)
+        };
+    }
+
+    private static long XrefField(byte[] rows, int at, int width, long fallback)
+    {
+        if (width == 0) return fallback;
+        long v = 0;
+        for (int k = 0; k < width; k++) v = v << 8 | rows[at + k];
+        return v;
     }
 
     /// <summary>
@@ -311,9 +346,7 @@ internal sealed partial class PdfDocument
         _objects.Clear();
         _objectStreams.Clear();
         _pendingObjectStreams.Clear();
-        var trailer = new PdfDictionary();
-        bool foundTrailer = false;
-        int? lastCatalog = null;
+        var scan = new RebuildScan();
 
         int pos = 0;
         while (pos < _data.Length)
@@ -321,59 +354,80 @@ internal sealed partial class PdfDocument
             int obj = IndexOf(_data, "obj"u8, pos, _data.Length);
             int trailerAt = IndexOf(_data, "trailer"u8, pos, _data.Length);
             if (trailerAt >= 0 && (obj < 0 || trailerAt < obj))
-            {
-                var lexer = new PdfLexer(_data, trailerAt + 7);
-                if (new PdfObjectParser(lexer, this).ParseObject() is PdfDictionary t)
-                {
-                    foundTrailer = true;
-                    foreach (var key in t.Keys) trailer.Put(key, t.GetRaw(key));
-                }
-                pos = Math.Max(lexer.Position, trailerAt + 7);
-                continue;
-            }
-            if (obj < 0) break;
-            pos = obj + 3;
-            if (obj > 0 && _data[obj - 1] == 'd') continue; // "endobj"
-            if (obj + 3 < _data.Length && PdfLexer.IsRegular(_data[obj + 3])) continue;
-            int headerStart = HeaderStart(obj, out int number, out int generation);
-            if (headerStart < 0) continue;
-
-            PdfObject? parsed;
-            int end;
-            try
-            {
-                (parsed, end) = ParseIndirectObjectAt(headerStart, number, decrypt: false, scanning: true);
-            }
-            catch (PdfFormatException)
-            {
-                continue;
-            }
-            _xref[number] = new XrefEntry(1, headerStart, generation, 0, 0);
-            if (end > pos) pos = end;
-
-            if (parsed is PdfDictionary d)
-            {
-                if (d.Is(PdfName.Catalog)) lastCatalog = number;
-                if (d is PdfStream s && s.Is(PdfName.Of("ObjStm"))) _pendingObjectStreams.Add(number);
-                if (d is PdfStream x && x.Is(PdfName.XRef))
-                {
-                    foundTrailer = true;
-                    foreach (var key in x.Keys)
-                        if (key.Equals(PdfName.Root) || key.Equals(PdfName.Info) || key.Equals(PdfName.ID) || key.Equals(PdfName.Encrypt))
-                            trailer.Put(key, x.GetRaw(key));
-                }
-            }
+                pos = RecoverTrailerAt(trailerAt, scan);
+            else if (obj < 0)
+                break;
+            else
+                pos = RecoverObjectAt(obj, scan);
         }
 
         // A file with neither a trailer nor a cross-reference stream anywhere has lost its end: it
         // is truncated, and whatever objects survive are a fragment, not a document to edit.
-        if (!foundTrailer)
+        if (!scan.FoundTrailer)
             throw new PdfFormatException("The file has no trailer and no cross-reference data anywhere: it is truncated or is not a complete PDF.");
-        Trailer = trailer;
-        if (!IsUsableRoot(Trailer.GetRaw(PdfName.Root)) && lastCatalog is int catalog)
+        Trailer = scan.Trailer;
+        if (!IsUsableRoot(Trailer.GetRaw(PdfName.Root)) && scan.LastCatalog is int catalog)
             Trailer.Put(PdfName.Root, GetReference(catalog, _xref[catalog].Generation));
         if (_xref.Count == 0)
             throw new PdfFormatException("No PDF objects could be found anywhere in the file; it is not a readable PDF.");
+    }
+
+    /// <summary>What a rebuild has found so far besides the objects themselves.</summary>
+    private sealed class RebuildScan
+    {
+        public PdfDictionary Trailer { get; } = new();
+        public bool FoundTrailer { get; set; }
+        public int? LastCatalog { get; set; }
+    }
+
+    /// <summary>Merges the trailer dictionary after the keyword at <paramref name="trailerAt"/>; returns where the scan resumes.</summary>
+    private int RecoverTrailerAt(int trailerAt, RebuildScan scan)
+    {
+        var lexer = new PdfLexer(_data, trailerAt + 7);
+        if (new PdfObjectParser(lexer, this).ParseObject() is PdfDictionary t)
+        {
+            scan.FoundTrailer = true;
+            foreach (var key in t.Keys) scan.Trailer.Put(key, t.GetRaw(key));
+        }
+        return Math.Max(lexer.Position, trailerAt + 7);
+    }
+
+    /// <summary>
+    /// Records the object whose "obj" keyword is at <paramref name="obj"/>, when that keyword
+    /// really opens one; returns where the scan resumes.
+    /// </summary>
+    private int RecoverObjectAt(int obj, RebuildScan scan)
+    {
+        int pos = obj + 3;
+        if (obj > 0 && _data[obj - 1] == 'd') return pos; // "endobj"
+        if (obj + 3 < _data.Length && PdfLexer.IsRegular(_data[obj + 3])) return pos;
+        int headerStart = HeaderStart(obj, out int number, out int generation);
+        if (headerStart < 0) return pos;
+
+        PdfObject? parsed;
+        int end;
+        try
+        {
+            (parsed, end) = ParseIndirectObjectAt(headerStart, number, decrypt: false, scanning: true);
+        }
+        catch (PdfFormatException)
+        {
+            return pos;
+        }
+        _xref[number] = new XrefEntry(1, headerStart, generation, 0, 0);
+        if (parsed is PdfDictionary d) NoteRecoveredDictionary(d, number, scan);
+        return Math.Max(pos, end);
+    }
+
+    private void NoteRecoveredDictionary(PdfDictionary d, int number, RebuildScan scan)
+    {
+        if (d.Is(PdfName.Catalog)) scan.LastCatalog = number;
+        if (d is PdfStream s && s.Is(PdfName.Of("ObjStm"))) _pendingObjectStreams.Add(number);
+        if (d is not PdfStream x || !x.Is(PdfName.XRef)) return;
+        scan.FoundTrailer = true;
+        foreach (var key in x.Keys)
+            if (key.Equals(PdfName.Root) || key.Equals(PdfName.Info) || key.Equals(PdfName.ID) || key.Equals(PdfName.Encrypt))
+                scan.Trailer.Put(key, x.GetRaw(key));
     }
 
     private bool IsUsableRoot(PdfObject? root) =>
@@ -528,11 +582,7 @@ internal sealed partial class PdfDocument
     {
         if (offset < 0 || offset >= _data.Length) return (null, offset);
         var lexer = new PdfLexer(_data, offset);
-        if (!lexer.Next() || lexer.TokenType != PdfTokenType.Number) return (null, offset);
-        int number = (int)Math.Clamp(lexer.NumberValue, 0, int.MaxValue);
-        if (!lexer.Next() || lexer.TokenType != PdfTokenType.Number) return (null, offset);
-        int generation = (int)Math.Clamp(lexer.NumberValue, 0, 65535);
-        if (!lexer.Next() || lexer.TokenType != PdfTokenType.Keyword || lexer.Text != "obj") return (null, offset);
+        if (!ReadObjectHeader(lexer, out int number, out int generation)) return (null, offset);
         if (expectedNumber is int expected && expected != number) return (null, offset);
 
         // References are parsed even while scanning — they cost nothing until resolved — but a
@@ -556,6 +606,17 @@ internal sealed partial class PdfDocument
         return (obj, lexer.Position);
     }
 
+    /// <summary>Reads "n g obj". False when the tokens at the lexer are not that.</summary>
+    private static bool ReadObjectHeader(PdfLexer lexer, out int number, out int generation)
+    {
+        number = generation = 0;
+        if (!NextIs(lexer, PdfTokenType.Number)) return false;
+        number = (int)Math.Clamp(lexer.NumberValue, 0, int.MaxValue);
+        if (!NextIs(lexer, PdfTokenType.Number)) return false;
+        generation = (int)Math.Clamp(lexer.NumberValue, 0, 65535);
+        return NextIs(lexer, PdfTokenType.Keyword) && lexer.Text == "obj";
+    }
+
     private PdfStream ReadStreamBody(PdfDictionary dict, PdfLexer lexer, bool scanning)
     {
         int start = lexer.Position;
@@ -563,33 +624,10 @@ internal sealed partial class PdfDocument
         if (start < _data.Length && _data[start] == '\r') start++;
         if (start < _data.Length && _data[start] == '\n') start++;
 
-        long declared = -1;
-        if (!scanning)
-        {
-            var lengthObj = dict.Get(PdfName.Length);
-            if (lengthObj is PdfNumber n) declared = n.LongValue();
-        }
-        else if (dict.GetRaw(PdfName.Length) is PdfNumber direct)
-        {
-            declared = direct.LongValue();
-        }
-
-        int end = -1;
-        if (declared >= 0 && start + declared <= _data.Length && EndstreamFollows((int)(start + declared)))
-            end = (int)(start + declared);
-        if (end < 0)
-        {
-            // /Length is missing, indirect and unreadable, or wrong: find the keyword instead.
-            int keyword = IndexOf(_data, "endstream"u8, start, _data.Length);
-            if (keyword < 0)
-            {
-                int endobj = IndexOf(_data, "endobj"u8, start, _data.Length);
-                keyword = endobj < 0 ? _data.Length : endobj;
-            }
-            end = keyword;
-            if (end > start && _data[end - 1] == '\n') end--;
-            if (end > start && _data[end - 1] == '\r') end--;
-        }
+        long declared = DeclaredLength(dict, scanning);
+        int end = declared >= 0 && start + declared <= _data.Length && EndstreamFollows((int)(start + declared))
+            ? (int)(start + declared)
+            : FindStreamEnd(start);
         byte[] raw = _data.AsSpan(start, end - start).ToArray();
         var stream = PdfStream.FromFile(dict, raw);
 
@@ -597,6 +635,31 @@ internal sealed partial class PdfDocument
         int kw = IndexOf(_data, "endstream"u8, end, Math.Min(_data.Length, end + 64));
         lexer.Position = kw >= 0 ? kw + 9 : after;
         return stream;
+    }
+
+    /// <summary>
+    /// The stream's /Length, or -1 when it has none. A scan never resolves a reference, so while
+    /// scanning /Length counts only when it is a direct number.
+    /// </summary>
+    private static long DeclaredLength(PdfDictionary dict, bool scanning)
+    {
+        var length = scanning ? dict.GetRaw(PdfName.Length) : dict.Get(PdfName.Length);
+        return length is PdfNumber n ? n.LongValue() : -1;
+    }
+
+    /// <summary>/Length is missing, indirect and unreadable, or wrong: find the keyword instead.</summary>
+    private int FindStreamEnd(int start)
+    {
+        int keyword = IndexOf(_data, "endstream"u8, start, _data.Length);
+        if (keyword < 0)
+        {
+            int endobj = IndexOf(_data, "endobj"u8, start, _data.Length);
+            keyword = endobj < 0 ? _data.Length : endobj;
+        }
+        int end = keyword;
+        if (end > start && _data[end - 1] == '\n') end--;
+        if (end > start && _data[end - 1] == '\r') end--;
+        return end;
     }
 
     private bool EndstreamFollows(int at)

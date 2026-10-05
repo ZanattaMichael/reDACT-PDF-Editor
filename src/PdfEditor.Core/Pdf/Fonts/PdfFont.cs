@@ -129,29 +129,36 @@ internal sealed class PdfFont
 
     private void BuildSimpleEncoding(PdfDictionary? dict, AfmMetrics? standard, bool symbolStd)
     {
-        string?[]? baseEncoding = null;
         var encoding = dict?.Get(PdfName.Encoding);
-        if (encoding is PdfName n) baseEncoding = FontEncodings.ByName(n.Value);
-        else if (encoding is PdfDictionary ed) baseEncoding = FontEncodings.ByName(ed.GetAsName(PdfName.BaseEncoding)?.Value);
-
-        if (baseEncoding == null)
-        {
-            if (symbolStd && standard != null) baseEncoding = standard.Encoding; // Symbol, ZapfDingbats: built in
-            else if (!IsType3 && !_symbolic) baseEncoding = FontEncodings.Standard;
-        }
-        if (baseEncoding != null) Array.Copy(baseEncoding, _glyphNames, 256);
-
+        if (BaseEncoding(encoding, standard, symbolStd) is { } baseEncoding) Array.Copy(baseEncoding, _glyphNames, 256);
         if (encoding is PdfDictionary diffDict && diffDict.GetAsArray(PdfName.Differences) is { } differences)
+            ApplyDifferences(differences);
+    }
+
+    private string?[]? BaseEncoding(PdfObject? encoding, AfmMetrics? standard, bool symbolStd)
+    {
+        var named = encoding switch
         {
-            int code = 0;
-            foreach (var item in differences)
+            PdfName n => FontEncodings.ByName(n.Value),
+            PdfDictionary ed => FontEncodings.ByName(ed.GetAsName(PdfName.BaseEncoding)?.Value),
+            _ => null,
+        };
+        if (named != null) return named;
+        if (symbolStd && standard != null) return standard.Encoding; // Symbol, ZapfDingbats: built in
+        if (!IsType3 && !_symbolic) return FontEncodings.Standard;
+        return null;
+    }
+
+    private void ApplyDifferences(PdfArray differences)
+    {
+        int code = 0;
+        foreach (var item in differences)
+        {
+            if (item is PdfNumber num) code = num.IntValue();
+            else if (item is PdfName glyph)
             {
-                if (item is PdfNumber num) code = num.IntValue();
-                else if (item is PdfName glyph)
-                {
-                    if (code is >= 0 and < 256) _glyphNames[code] = glyph.Value;
-                    code++;
-                }
+                if (code is >= 0 and < 256) _glyphNames[code] = glyph.Value;
+                code++;
             }
         }
     }
@@ -161,15 +168,22 @@ internal sealed class PdfFont
         var widths = dict?.GetAsArray(PdfName.Widths);
         double missing = descriptor?.GetAsDouble(PdfName.MissingWidth) ?? 0;
         if (widths != null && widths.Count > 0)
+            ReadWidthsArray(widths, dict!.GetAsInt(PdfName.FirstChar) ?? 0, missing);
+        else
+            EstimateWidths(standard, missing);
+    }
+
+    private void ReadWidthsArray(PdfArray widths, int first, double missing)
+    {
+        for (int code = 0; code < 256; code++)
         {
-            int first = dict!.GetAsInt(PdfName.FirstChar) ?? 0;
-            for (int code = 0; code < 256; code++)
-            {
-                int i = code - first;
-                _simpleWidths![code] = i >= 0 && i < widths.Count ? widths.GetNumber(i, missing) : missing;
-            }
-            return;
+            int i = code - first;
+            _simpleWidths![code] = i >= 0 && i < widths.Count ? widths.GetNumber(i, missing) : missing;
         }
+    }
+
+    private void EstimateWidths(AfmMetrics? standard, double missing)
+    {
         // No /Widths: the standard fonts' metrics are known; anything else is measured as
         // Helvetica rather than as zero-width, because a zero-width glyph has no box and so
         // could never be found under a redaction region.
@@ -222,20 +236,30 @@ internal sealed class PdfFont
         while (i < w.Count && budget > 0)
         {
             if (w.GetAsNumber(i) is not { } first) { i++; continue; }
-            int start = first.IntValue();
-            if (w.Get(i + 1) is PdfArray list)
-            {
-                for (int k = 0; k < list.Count && budget-- > 0; k++) widths[start + k] = list.GetNumber(k);
-                i += 2;
-            }
-            else if (w.GetAsNumber(i + 1) is { } lastNum && w.GetAsNumber(i + 2) is { } width)
-            {
-                int last = lastNum.IntValue();
-                for (int cid = start; cid <= last && budget-- > 0; cid++) widths[cid] = width.Value;
-                i += 3;
-            }
-            else break;
+            int used = ReadCidWidthEntry(w, i, first.IntValue(), widths, ref budget);
+            if (used == 0) break;
+            i += used;
         }
+    }
+
+    /// <summary>
+    /// Reads the /W entry at <paramref name="i"/>, either <c>c [w1 w2 …]</c> or
+    /// <c>cFirst cLast w</c>. Returns how many array items it took, or 0 when it is malformed.
+    /// </summary>
+    private static int ReadCidWidthEntry(PdfArray w, int i, int start, Dictionary<int, double> widths, ref int budget)
+    {
+        if (w.Get(i + 1) is PdfArray list)
+        {
+            for (int k = 0; k < list.Count && budget-- > 0; k++) widths[start + k] = list.GetNumber(k);
+            return 2;
+        }
+        if (w.GetAsNumber(i + 1) is { } lastNum && w.GetAsNumber(i + 2) is { } width)
+        {
+            int last = lastNum.IntValue();
+            for (int cid = start; cid <= last && budget-- > 0; cid++) widths[cid] = width.Value;
+            return 3;
+        }
+        return 0;
     }
 
     // ------------------------------------------------------------------ shared helpers

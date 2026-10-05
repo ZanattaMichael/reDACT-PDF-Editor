@@ -118,23 +118,7 @@ internal static class StandardFonts
             if (line.Length == 0) continue;
             if (line.StartsWith("C ", StringComparison.Ordinal) || line.StartsWith("CH ", StringComparison.Ordinal))
             {
-                int code = -1;
-                float width = 0;
-                string? name = null;
-                foreach (var part in line.Split(';'))
-                {
-                    var tokens = part.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                    if (tokens.Length < 2) continue;
-                    switch (tokens[0])
-                    {
-                        case "C": code = int.Parse(tokens[1], CultureInfo.InvariantCulture); break;
-                        case "WX": width = float.Parse(tokens[1], CultureInfo.InvariantCulture); break;
-                        case "N": name = tokens[1]; break;
-                    }
-                }
-                if (name == null) continue;
-                widths[name] = width;
-                if (code is >= 0 and < 256) encoding[code] = name;
+                ReadCharMetrics(line, widths, encoding);
                 continue;
             }
             var t = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -162,6 +146,28 @@ internal static class StandardFonts
             FontName = fontName, Ascender = ascender, Descender = descender, CapHeight = cap, XHeight = x,
             IsFixedPitch = fixedPitch, FontBBox = bbox, Widths = widths, Encoding = encoding,
         };
+    }
+
+    /// <summary>Reads one character metrics line: <c>C code ; WX width ; N name ; …</c>.</summary>
+    private static void ReadCharMetrics(string line, Dictionary<string, float> widths, string?[] encoding)
+    {
+        int code = -1;
+        float width = 0;
+        string? name = null;
+        foreach (var part in line.Split(';'))
+        {
+            var tokens = part.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (tokens.Length < 2) continue;
+            switch (tokens[0])
+            {
+                case "C": code = int.Parse(tokens[1], CultureInfo.InvariantCulture); break;
+                case "WX": width = float.Parse(tokens[1], CultureInfo.InvariantCulture); break;
+                case "N": name = tokens[1]; break;
+            }
+        }
+        if (name == null) return;
+        widths[name] = width;
+        if (code is >= 0 and < 256) encoding[code] = name;
     }
 }
 
@@ -227,23 +233,29 @@ internal static class GlyphList
 
         // "uniXXXX[XXXX…]": one or more BMP code points.
         if (name.StartsWith("uni", StringComparison.Ordinal) && name.Length >= 7 && (name.Length - 3) % 4 == 0)
-        {
-            var sb = new StringBuilder();
-            for (int i = 3; i < name.Length; i += 4)
-            {
-                if (!int.TryParse(name.AsSpan(i, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int cp)
-                    || cp is >= 0xD800 and <= 0xDFFF) return null;
-                sb.Append((char)cp);
-            }
-            return sb.ToString();
-        }
-        // "uXXXX" to "uXXXXXX": one code point.
-        if (name.Length is >= 5 and <= 7 && name[0] == 'u'
-            && int.TryParse(name.AsSpan(1), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int u)
-            && u <= 0x10FFFF && u is not (>= 0xD800 and <= 0xDFFF))
-            return char.ConvertFromUtf32(u);
-        return null;
+            return FromUniName(name);
+        return FromUName(name);
     }
+
+    private static string? FromUniName(string name)
+    {
+        var sb = new StringBuilder();
+        for (int i = 3; i < name.Length; i += 4)
+        {
+            if (!int.TryParse(name.AsSpan(i, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int cp)
+                || cp is >= 0xD800 and <= 0xDFFF) return null;
+            sb.Append((char)cp);
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>"uXXXX" to "uXXXXXX": one code point.</summary>
+    private static string? FromUName(string name) =>
+        name.Length is >= 5 and <= 7 && name[0] == 'u'
+        && int.TryParse(name.AsSpan(1), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int u)
+        && u <= 0x10FFFF && u is not (>= 0xD800 and <= 0xDFFF)
+            ? char.ConvertFromUtf32(u)
+            : null;
 
     /// <summary>The glyph name for a character, for looking up widths in an AFM; null when unnamed.</summary>
     public static string? NameOf(string text) => Reverse.Value.TryGetValue(text, out var name) ? name : null;
