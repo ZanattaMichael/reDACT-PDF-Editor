@@ -135,6 +135,13 @@ internal sealed class ContentStreamEditor : ContentProcessor
         // Re-emit the side effects of ' and " (line advance, word/char spacing), then
         // re-emit the show-text call in TJ form with hit glyphs replaced by
         // equivalent-width displacements.
+        WriteQuoteSideEffects(op);
+        var replacement = ReplacementFor(ShownItems(op), shown);
+        Write(new ContentOperation("TJ", new List<PdfObject> { replacement }));
+    }
+
+    private void WriteQuoteSideEffects(ContentOperation op)
+    {
         var operands = op.Operands;
         var builder = new ContentBuilder();
         switch (op.Operator)
@@ -149,50 +156,59 @@ internal sealed class ContentStreamEditor : ContentProcessor
                 break;
         }
         _out.Write(builder.ToArray());
+    }
 
-        var sourceItems = new List<PdfObject>();
+    /// <summary>The strings and kerning numbers a show-text operator shows, in order.</summary>
+    private static List<PdfObject> ShownItems(ContentOperation op)
+    {
+        var operands = op.Operands;
+        var items = new List<PdfObject>();
         if (op.Operator == "TJ" && operands.Count > 0 && operands[^1] is PdfArray arr)
-            sourceItems.AddRange(arr);
+            items.AddRange(arr);
         else if (operands.Count > 0)
-            sourceItems.Add(operands[^1]);
+            items.Add(operands[^1]);
+        return items;
+    }
 
-        int stringCount = sourceItems.Count(o => o is PdfString);
+    private PdfArray ReplacementFor(List<PdfObject> sourceItems, List<TextRenderInfo> shown)
+    {
         var replacement = new PdfArray();
-        if (stringCount == shown.Count)
-        {
-            int textIdx = 0;
-            foreach (var item in sourceItems)
-            {
-                if (item is not PdfString str)
-                {
-                    replacement.Add(item);
-                    continue;
-                }
-                var info = shown[textIdx++];
-                if (!IntersectsAnyRegion(info.BoundingBox))
-                {
-                    replacement.Add(item);
-                    continue;
-                }
-                // Per-glyph split: glyphs outside the region survive, glyphs inside are
-                // replaced by an equivalent-width displacement so the line does not shift.
-                foreach (var glyph in info.Glyphs)
-                {
-                    if (IntersectsAnyRegion(glyph.BoundingBox))
-                        replacement.Add(new PdfNumber(DisplacementFor(glyph.UnscaledWidth, info)));
-                    else
-                        replacement.Add(new PdfString(glyph.Bytes, str.IsHex));
-                }
-            }
-        }
-        else
+        if (sourceItems.Count(o => o is PdfString) != shown.Count)
         {
             // Event/string count mismatch: drop the whole operator, preserving the total advance
             // so later text does not shift.
             replacement.Add(new PdfNumber(shown.Sum(s => DisplacementFor(s.UnscaledWidth, s))));
+            return replacement;
         }
 
-        Write(new ContentOperation("TJ", new List<PdfObject> { replacement }));
+        int textIdx = 0;
+        foreach (var item in sourceItems)
+        {
+            if (item is not PdfString str)
+            {
+                replacement.Add(item);
+                continue;
+            }
+            var info = shown[textIdx++];
+            if (IntersectsAnyRegion(info.BoundingBox))
+                AddGlyphsSplitAtRegions(replacement, str, info);
+            else
+                replacement.Add(item);
+        }
+        return replacement;
+    }
+
+    // Per-glyph split: glyphs outside the region survive, glyphs inside are replaced by an
+    // equivalent-width displacement so the line does not shift.
+    private void AddGlyphsSplitAtRegions(PdfArray replacement, PdfString str, TextRenderInfo info)
+    {
+        foreach (var glyph in info.Glyphs)
+        {
+            if (IntersectsAnyRegion(glyph.BoundingBox))
+                replacement.Add(new PdfNumber(DisplacementFor(glyph.UnscaledWidth, info)));
+            else
+                replacement.Add(new PdfString(glyph.Bytes, str.IsHex));
+        }
     }
 
     private static double DisplacementFor(double unscaledWidth, TextRenderInfo info)
@@ -214,77 +230,81 @@ internal sealed class ContentStreamEditor : ContentProcessor
         var subtype = stream?.GetAsName(PdfName.Subtype);
 
         if (name == null || stream == null)
+            Write(op);
+        else if (PdfName.Image.Equals(subtype))
+            HandleImageDo(op, name, stream);
+        else if (PdfName.Form.Equals(subtype))
+            HandleFormDo(op, stream);
+        else
+            Write(op);
+    }
+
+    private void HandleImageDo(ContentOperation op, PdfName name, PdfStream stream)
+    {
+        var bbox = State.Ctm.TransformRect(0, 0, 1, 1);
+        if (!IntersectsAnyRegion(bbox) || _kinds == ContentKinds.TextOnly)
         {
             Write(op);
             return;
         }
-
-        if (PdfName.Image.Equals(subtype))
+        RemovedAnything = true;
+        // Erasing for an edit never drops the image: the region is a few words on a scanned
+        // page, and losing the whole page image to replace one of them is not a trade any
+        // user would make. Redaction still drops it, because leaving it is a disclosure.
+        if (ContainedInAnyRegion(bbox) && _kinds != ContentKinds.TextAndPixelsBeneath)
+            return; // fully covered: drop the draw call entirely
+        var fill = _kinds == ContentKinds.TextAndPixelsBeneath
+            ? ScrubFill.SurroundingPaper : ScrubFill.Black;
+        if (ImageScrubber.TryScrubPixels(stream, bbox, _regions, out var scrubFailure, fill, Resources))
         {
-            var bbox = State.Ctm.TransformRect(0, 0, 1, 1);
-            if (IntersectsAnyRegion(bbox) && _kinds != ContentKinds.TextOnly)
-            {
-                RemovedAnything = true;
-                // Erasing for an edit never drops the image: the region is a few words on a scanned
-                // page, and losing the whole page image to replace one of them is not a trade any
-                // user would make. Redaction still drops it, because leaving it is a disclosure.
-                if (ContainedInAnyRegion(bbox) && _kinds != ContentKinds.TextAndPixelsBeneath)
-                    return; // fully covered: drop the draw call entirely
-                var fill = _kinds == ContentKinds.TextAndPixelsBeneath
-                    ? ScrubFill.SurroundingPaper : ScrubFill.Black;
-                if (ImageScrubber.TryScrubPixels(stream, bbox, _regions, out var scrubFailure, fill, Resources))
-                {
-                    Write(op);
-                    return;
-                }
-                _warnings.Add($"Image '{name.Value}' partially overlaps a redaction region " +
-                              $"and could not be pixel-scrubbed ({scrubFailure}); it was removed " +
-                              "entirely.");
-                return;
-            }
             Write(op);
             return;
         }
+        _warnings.Add($"Image '{name.Value}' partially overlaps a redaction region " +
+                      $"and could not be pixel-scrubbed ({scrubFailure}); it was removed " +
+                      "entirely.");
+    }
 
-        if (PdfName.Form.Equals(subtype))
+    private void HandleFormDo(ContentOperation op, PdfStream stream)
+    {
+        // Never let the interpreter recurse into the form: it would replay the form's content
+        // through this editor and inline it into the page. Handle it on a copy instead.
+        var full = Matrix.FromArray(stream.GetAsArray(PdfName.Matrix)).Multiply(State.Ctm);
+        var formBBox = PdfRect.FromArray(stream.GetAsArray(PdfName.BBox)) is { } box ? full.TransformRect(box) : (PdfRect?)null;
+        if (formBBox is not { } fb || !IntersectsAnyRegion(fb))
         {
-            // Never let the interpreter recurse into the form: it would replay the form's content
-            // through this editor and inline it into the page. Handle it on a copy instead.
-            var full = Matrix.FromArray(stream.GetAsArray(PdfName.Matrix)).Multiply(State.Ctm);
-            var formBBox = PdfRect.FromArray(stream.GetAsArray(PdfName.BBox)) is { } box ? full.TransformRect(box) : (PdfRect?)null;
-            if (formBBox is { } fb && IntersectsAnyRegion(fb))
-            {
-                if (_depth >= 6)
-                {
-                    _warnings.Add("Form XObject nesting too deep; dropping the whole form inside the region.");
-                    RemovedAnything = true;
-                    return;
-                }
-                var cloned = PdfStream.FromFile(stream, stream.RawData);
-                _document.MakeIndirect(cloned);
-                var formResources = _editResources;
-                if (cloned.GetAsDictionary(PdfName.Resources) is { } own)
-                {
-                    // The clone gets its own resource dictionaries: editing it registers new
-                    // XObjects there, and those must not appear in the original form, which other
-                    // pages may still draw.
-                    formResources = ShallowCopy(own);
-                    if (own.GetAsDictionary(PdfName.XObject) is { } xobjects)
-                        formResources.Put(PdfName.XObject, ShallowCopy(xobjects));
-                    cloned.Put(PdfName.Resources, formResources);
-                }
-                var inner = Create(TransformRegionsInto(full), _document, _warnings, _depth + 1, _kinds);
-                inner.EditFormStream(cloned, formResources);
-                RemovedAnything |= inner.RemovedAnything;
-                var newName = PdfResources.Add(_editResources, PdfName.XObject, "Fm", cloned);
-                Write(new ContentOperation("Do", new List<PdfObject> { newName }));
-                return;
-            }
             Write(op);
             return;
         }
+        if (_depth >= 6)
+        {
+            _warnings.Add("Form XObject nesting too deep; dropping the whole form inside the region.");
+            RemovedAnything = true;
+            return;
+        }
+        var cloned = PdfStream.FromFile(stream, stream.RawData);
+        _document.MakeIndirect(cloned);
+        var formResources = ResourcesForClone(cloned);
+        var inner = Create(TransformRegionsInto(full), _document, _warnings, _depth + 1, _kinds);
+        inner.EditFormStream(cloned, formResources);
+        RemovedAnything |= inner.RemovedAnything;
+        var newName = PdfResources.Add(_editResources, PdfName.XObject, "Fm", cloned);
+        Write(new ContentOperation("Do", new List<PdfObject> { newName }));
+    }
 
-        Write(op);
+    /// <summary>
+    /// The clone gets its own resource dictionaries: editing it registers new XObjects there, and
+    /// those must not appear in the original form, which other pages may still draw. A form with
+    /// no resources of its own keeps drawing with its parent's.
+    /// </summary>
+    private PdfDictionary ResourcesForClone(PdfStream cloned)
+    {
+        if (cloned.GetAsDictionary(PdfName.Resources) is not { } own) return _editResources;
+        var formResources = ShallowCopy(own);
+        if (own.GetAsDictionary(PdfName.XObject) is { } xobjects)
+            formResources.Put(PdfName.XObject, ShallowCopy(xobjects));
+        cloned.Put(PdfName.Resources, formResources);
+        return formResources;
     }
 
     private void HandleInlineImage(ContentOperation op)

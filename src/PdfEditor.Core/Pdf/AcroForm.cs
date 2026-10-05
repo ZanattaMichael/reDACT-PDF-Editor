@@ -81,21 +81,22 @@ internal static class AcroForm
         var fields = Get(doc)?.GetAsArray(PdfName.Fields);
         if (fields == null) return result;
         foreach (var f in fields)
-            if (f is PdfDictionary d) Walk(d, null, 0);
+            if (f is PdfDictionary d) WalkFieldTree(d, null, 0, result, seen);
         return result;
+    }
 
-        void Walk(PdfDictionary node, string? parentName, int depth)
-        {
-            if (depth > 64 || !seen.Add(node)) return;
-            string? partial = node.GetText(PdfName.T);
-            if (partial == null && parentName != null) return; // a widget, not a field
-            // Past the check above, a node under a parent always has its own partial name.
-            string name = parentName == null ? partial ?? "" : parentName + "." + partial;
-            result.Add((name, node));
-            if (node.GetAsArray(PdfName.Kids) is { } kids)
-                foreach (var kid in kids)
-                    if (kid is PdfDictionary k && k.ContainsKey(PdfName.T)) Walk(k, name, depth + 1);
-        }
+    private static void WalkFieldTree(PdfDictionary node, string? parentName, int depth,
+        List<(string, PdfDictionary)> result, HashSet<PdfDictionary> seen)
+    {
+        if (depth > 64 || !seen.Add(node)) return;
+        string? partial = node.GetText(PdfName.T);
+        if (partial == null && parentName != null) return; // a widget, not a field
+        // Past the check above, a node under a parent always has its own partial name.
+        string name = parentName == null ? partial ?? "" : parentName + "." + partial;
+        result.Add((name, node));
+        if (node.GetAsArray(PdfName.Kids) is { } kids)
+            foreach (var kid in kids)
+                if (kid is PdfDictionary k && k.ContainsKey(PdfName.T)) WalkFieldTree(k, name, depth + 1, result, seen);
     }
 
     /// <summary>The terminal fields (those that own widgets), in tree order.</summary>
@@ -429,31 +430,34 @@ internal static class AcroForm
         var drawings = new Dictionary<PdfPage, ContentBuilder>();
         bool needAppearances = form.GetAsBool(PdfName.NeedAppearances) == true;
         foreach (var field in fields)
-        {
             foreach (var widget in field.Widgets)
-            {
-                // A text or choice field that leaves its appearance to the viewer (no /AP, or
-                // /NeedAppearances) has to have one built now, or flattening would drop its value.
-                if (field.FieldType is "Tx" or "Ch" && (needAppearances || NormalAppearance(widget) == null))
-                    RegenerateText(doc, form, field, widget);
-
-                int pageNumber = PageOf(doc, widget);
-                if (pageNumber == 0) continue;
-                var page = doc.GetPage(pageNumber);
-                bool hidden = ((widget.GetAsInt(PdfName.F) ?? 0) & 2) != 0;
-                if (!hidden && NormalAppearance(widget) is { } appearance
-                    && PdfRect.FromArray(widget.GetAsArray(PdfName.Rect)) is { } rect)
-                {
-                    if (!drawings.TryGetValue(page, out var canvas)) drawings[page] = canvas = new ContentBuilder();
-                    DrawFitted(canvas, page, appearance, rect);
-                }
-                page.RemoveAnnotation(widget);
-            }
-        }
+                FlattenWidget(doc, form, field, widget, needAppearances, drawings);
         foreach (var (page, canvas) in drawings)
             PdfContentGuard.DrawInDefaultUserSpace(page, canvas.ToArray());
         doc.Catalog!.Remove(PdfName.AcroForm);
         return fields.Count;
+    }
+
+    /// <summary>Queues the widget's appearance for drawing into its page, then removes the widget.</summary>
+    private static void FlattenWidget(PdfDocument doc, PdfDictionary form, FormFieldNode field,
+        PdfDictionary widget, bool needAppearances, Dictionary<PdfPage, ContentBuilder> drawings)
+    {
+        // A text or choice field that leaves its appearance to the viewer (no /AP, or
+        // /NeedAppearances) has to have one built now, or flattening would drop its value.
+        if (field.FieldType is "Tx" or "Ch" && (needAppearances || NormalAppearance(widget) == null))
+            RegenerateText(doc, form, field, widget);
+
+        int pageNumber = PageOf(doc, widget);
+        if (pageNumber == 0) return;
+        var page = doc.GetPage(pageNumber);
+        bool hidden = ((widget.GetAsInt(PdfName.F) ?? 0) & 2) != 0;
+        if (!hidden && NormalAppearance(widget) is { } appearance
+            && PdfRect.FromArray(widget.GetAsArray(PdfName.Rect)) is { } rect)
+        {
+            if (!drawings.TryGetValue(page, out var canvas)) drawings[page] = canvas = new ContentBuilder();
+            DrawFitted(canvas, page, appearance, rect);
+        }
+        page.RemoveAnnotation(widget);
     }
 
     /// <summary>A widget's normal appearance stream, choosing the /AS state when there are several.</summary>

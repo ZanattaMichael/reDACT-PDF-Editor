@@ -43,23 +43,9 @@ internal static class ContentParser
         var operands = new List<PdfObject>();
         while (lexer.Next())
         {
-            if (lexer.TokenType == PdfTokenType.Keyword && lexer.Text is not ("true" or "false" or "null"))
+            if (OperationEndingAt(lexer, parser, operands) is { } op)
             {
-                string op = lexer.Text;
-                if (op == "BI")
-                {
-                    ops.Add(ReadInlineImage(lexer, parser));
-                    operands = new List<PdfObject>();
-                    continue;
-                }
-                ops.Add(new ContentOperation(op, operands));
-                operands = new List<PdfObject>();
-                continue;
-            }
-            if (lexer.TokenType is PdfTokenType.ArrayEnd or PdfTokenType.DictEnd)
-            {
-                // A stray closer: keep it as an operator so it round-trips, rather than vanish.
-                ops.Add(new ContentOperation(lexer.TokenType == PdfTokenType.ArrayEnd ? "]" : ">>", operands));
+                ops.Add(op);
                 operands = new List<PdfObject>();
                 continue;
             }
@@ -69,6 +55,17 @@ internal static class ContentParser
             operands.Add(operand);
         }
         return ops;
+    }
+
+    /// <summary>The operation the current token ends, or null when the token starts an operand.</summary>
+    private static ContentOperation? OperationEndingAt(PdfLexer lexer, PdfObjectParser parser, List<PdfObject> operands)
+    {
+        if (lexer.TokenType == PdfTokenType.Keyword && lexer.Text is not ("true" or "false" or "null"))
+            return lexer.Text == "BI" ? ReadInlineImage(lexer, parser) : new ContentOperation(lexer.Text, operands);
+        // A stray closer: keep it as an operator so it round-trips, rather than vanish.
+        if (lexer.TokenType is PdfTokenType.ArrayEnd or PdfTokenType.DictEnd)
+            return new ContentOperation(lexer.TokenType == PdfTokenType.ArrayEnd ? "]" : ">>", operands);
+        return null;
     }
 
     /// <summary>Reads <c>BI &lt;dict entries&gt; ID &lt;data&gt; EI</c>.</summary>
@@ -110,18 +107,29 @@ internal static class ContentParser
     /// </summary>
     private static int FindInlineImageEnd(PdfDictionary dict, byte[] data, int start, int end, out int afterEi)
     {
-        int? expected = ExpectedLength(dict);
-        if (expected is int len && start + len <= end)
+        if (ExpectedLength(dict) is int len && start + len <= end && EndOfEiAt(data, start + len, end) is int eiEnd)
         {
-            int p = start + len;
-            while (p < end && PdfLexer.IsWhitespace(data[p])) p++;
-            if (p + 2 <= end && data[p] == 'E' && data[p + 1] == 'I' && (p + 2 == end || !PdfLexer.IsRegular(data[p + 2])))
-            {
-                afterEi = p + 2;
-                return start + len;
-            }
+            afterEi = eiEnd;
+            return start + len;
         }
+        return FindEiByScanning(data, start, end, out afterEi);
+    }
 
+    /// <summary>
+    /// The position just past an EI token at <paramref name="from"/> (after any whitespace), or
+    /// null when there is none.
+    /// </summary>
+    private static int? EndOfEiAt(byte[] data, int from, int end)
+    {
+        int p = from;
+        while (p < end && PdfLexer.IsWhitespace(data[p])) p++;
+        if (p + 2 <= end && data[p] == 'E' && data[p + 1] == 'I' && (p + 2 == end || !PdfLexer.IsRegular(data[p + 2])))
+            return p + 2;
+        return null;
+    }
+
+    private static int FindEiByScanning(byte[] data, int start, int end, out int afterEi)
+    {
         for (int p = start; p + 2 <= end; p++)
         {
             if (data[p] != 'E' || data[p + 1] != 'I') continue;
@@ -153,29 +161,31 @@ internal static class ContentParser
     private static int? ExpectedLength(PdfDictionary dict)
     {
         if (dict.ContainsKey(PdfName.Of("F")) || dict.ContainsKey(PdfName.Filter)) return null;
-        int w = (dict.Get(PdfName.Of("W")) ?? dict.Get(PdfName.Width)) is PdfNumber wn ? wn.IntValue() : -1;
-        int h = (dict.Get(PdfName.Of("H")) ?? dict.Get(PdfName.Height)) is PdfNumber hn ? hn.IntValue() : -1;
+        int w = InlineEntry(dict, "W", PdfName.Width) is PdfNumber wn ? wn.IntValue() : -1;
+        int h = InlineEntry(dict, "H", PdfName.Height) is PdfNumber hn ? hn.IntValue() : -1;
         if (w <= 0 || h <= 0) return null;
-        bool mask = (dict.Get(PdfName.Of("IM")) ?? dict.Get(PdfName.ImageMask)) is PdfBoolean { Value: true };
-        int bpc = mask ? 1 : (dict.Get(PdfName.Of("BPC")) ?? dict.Get(PdfName.BitsPerComponent)) is PdfNumber b ? b.IntValue() : 8;
-        int colors = 1;
-        if (!mask)
-        {
-            var cs = dict.Get(PdfName.Of("CS")) ?? dict.Get(PdfName.ColorSpace);
-            colors = cs switch
-            {
-                PdfName n when n.Value is "RGB" or "DeviceRGB" or "CalRGB" => 3,
-                PdfName n when n.Value is "CMYK" or "DeviceCMYK" => 4,
-                PdfName n when n.Value is "G" or "DeviceGray" or "CalGray" or "I" or "Indexed" => 1,
-                PdfArray a when a.GetAsName(0)?.Value is "I" or "Indexed" => 1,
-                null => 1,
-                _ => -1,
-            };
-        }
+        bool mask = InlineEntry(dict, "IM", PdfName.ImageMask) is PdfBoolean { Value: true };
+        int bpc = mask ? 1 : InlineEntry(dict, "BPC", PdfName.BitsPerComponent) is PdfNumber b ? b.IntValue() : 8;
+        int colors = mask ? 1 : ColorComponents(InlineEntry(dict, "CS", PdfName.ColorSpace));
         if (colors < 0 || bpc is not (1 or 2 or 4 or 8 or 16)) return null;
         long length = (long)((w * colors * bpc + 7) / 8) * h;
         return length > int.MaxValue ? null : (int)length;
     }
+
+    /// <summary>An inline image dictionary entry, which may be written abbreviated or in full.</summary>
+    private static PdfObject? InlineEntry(PdfDictionary dict, string abbreviation, PdfName full) =>
+        dict.Get(PdfName.Of(abbreviation)) ?? dict.Get(full);
+
+    /// <summary>Components per pixel of an inline image's colour space; -1 when it can't be told.</summary>
+    private static int ColorComponents(PdfObject? colorSpace) => colorSpace switch
+    {
+        PdfName n when n.Value is "RGB" or "DeviceRGB" or "CalRGB" => 3,
+        PdfName n when n.Value is "CMYK" or "DeviceCMYK" => 4,
+        PdfName n when n.Value is "G" or "DeviceGray" or "CalGray" or "I" or "Indexed" => 1,
+        PdfArray a when a.GetAsName(0)?.Value is "I" or "Indexed" => 1,
+        null => 1,
+        _ => -1,
+    };
 }
 
 /// <summary>Serialises content operations and the direct objects they carry.</summary>
@@ -238,39 +248,54 @@ internal static class ContentWriter
                 WriteString(output, s.Bytes, s.IsHex);
                 break;
             case PdfName name:
-                output.WriteByte((byte)'/');
-                foreach (byte b in Encoding.UTF8.GetBytes(name.Value))
-                {
-                    if (b < 0x21 || b > 0x7E || b == '#' || PdfLexer.IsDelimiter(b))
-                        WriteAscii(output, "#" + b.ToString("X2", CultureInfo.InvariantCulture));
-                    else
-                        output.WriteByte(b);
-                }
+                WriteName(output, name);
                 break;
             case PdfArray a:
-                output.WriteByte((byte)'[');
-                for (int i = 0; i < a.Count; i++)
-                {
-                    if (i > 0) output.WriteByte((byte)' ');
-                    WriteObject(output, a.GetRaw(i), depth + 1);
-                }
-                output.WriteByte((byte)']');
+                WriteArray(output, a, depth);
                 break;
             case PdfDictionary d:
-                WriteAscii(output, "<<");
-                foreach (var key in d.Keys)
-                {
-                    WriteObject(output, key, depth + 1);
-                    output.WriteByte((byte)' ');
-                    WriteObject(output, d.GetRaw(key)!, depth + 1);
-                }
-                WriteAscii(output, ">>");
+                WriteDictionary(output, d, depth);
                 break;
             case PdfReference r:
                 // Content streams cannot hold references; a resolved value is the only sane output.
                 WriteObject(output, r.Resolve(), depth + 1);
                 break;
         }
+    }
+
+    private static void WriteName(Stream output, PdfName name)
+    {
+        output.WriteByte((byte)'/');
+        foreach (byte b in Encoding.UTF8.GetBytes(name.Value))
+        {
+            if (b < 0x21 || b > 0x7E || b == '#' || PdfLexer.IsDelimiter(b))
+                WriteAscii(output, "#" + b.ToString("X2", CultureInfo.InvariantCulture));
+            else
+                output.WriteByte(b);
+        }
+    }
+
+    private static void WriteArray(Stream output, PdfArray a, int depth)
+    {
+        output.WriteByte((byte)'[');
+        for (int i = 0; i < a.Count; i++)
+        {
+            if (i > 0) output.WriteByte((byte)' ');
+            WriteObject(output, a.GetRaw(i), depth + 1);
+        }
+        output.WriteByte((byte)']');
+    }
+
+    private static void WriteDictionary(Stream output, PdfDictionary d, int depth)
+    {
+        WriteAscii(output, "<<");
+        foreach (var key in d.Keys)
+        {
+            WriteObject(output, key, depth + 1);
+            output.WriteByte((byte)' ');
+            WriteObject(output, d.GetRaw(key)!, depth + 1);
+        }
+        WriteAscii(output, ">>");
     }
 
     public static void WriteString(Stream output, byte[] bytes, bool hex)

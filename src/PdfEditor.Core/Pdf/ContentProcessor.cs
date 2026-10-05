@@ -277,6 +277,31 @@ internal class ContentProcessor
         var o = op.Operands;
         switch (op.Operator)
         {
+            case "q" or "Q" or "cm" or "gs":
+                ExecuteGraphicsState(op.Operator, o);
+                break;
+            case "Tc" or "Tw" or "Tz" or "TL" or "Ts" or "Tr":
+                ExecuteTextState(op.Operator, o);
+                break;
+            case "BT" or "Tf" or "Td" or "TD" or "Tm" or "T*":
+                ExecuteTextPositioning(op.Operator, o);
+                break;
+            case "Tj" or "'" or "\"" or "TJ":
+                ExecuteShowText(op.Operator, o);
+                break;
+            case "Do":
+                if (LastOperand<PdfName>(o) is { } xobject) DoXObject(xobject);
+                break;
+            case "BI":
+                ReportInlineImage(op);
+                break;
+        }
+    }
+
+    private void ExecuteGraphicsState(string oper, List<PdfObject> o)
+    {
+        switch (oper)
+        {
             case "q":
                 if (_stack.Count < MaxStateDepth) _stack.Push(State.Clone());
                 break;
@@ -287,11 +312,15 @@ internal class ContentProcessor
                 if (Num(o, 6) is { } m) State.Ctm = new Matrix(m[0], m[1], m[2], m[3], m[4], m[5]).Multiply(State.Ctm);
                 break;
             case "gs":
-                ApplyExtGState(o.Count > 0 ? o[^1] as PdfName : null);
+                ApplyExtGState(LastOperand<PdfName>(o));
                 break;
-            case "BT":
-                TextMatrix = TextLineMatrix = Matrix.Identity;
-                break;
+        }
+    }
+
+    private void ExecuteTextState(string oper, List<PdfObject> o)
+    {
+        switch (oper)
+        {
             case "Tc":
                 if (Num(o, 1) is { } tc) State.CharSpacing = tc[0];
                 break;
@@ -309,6 +338,16 @@ internal class ContentProcessor
                 break;
             case "Tr":
                 if (Num(o, 1) is { } tr) State.RenderMode = (int)tr[0];
+                break;
+        }
+    }
+
+    private void ExecuteTextPositioning(string oper, List<PdfObject> o)
+    {
+        switch (oper)
+        {
+            case "BT":
+                TextMatrix = TextLineMatrix = Matrix.Identity;
                 break;
             case "Tf":
                 if (o.Count >= 2 && o[^2] is PdfName fontName && o[^1] is PdfNumber size)
@@ -333,12 +372,19 @@ internal class ContentProcessor
             case "T*":
                 MoveText(0, -State.Leading);
                 break;
+        }
+    }
+
+    private void ExecuteShowText(string oper, List<PdfObject> o)
+    {
+        switch (oper)
+        {
             case "Tj":
-                if (o.Count > 0 && o[^1] is PdfString tj) ShowString(tj.Bytes, 0);
+                if (LastOperand<PdfString>(o) is { } tj) ShowString(tj.Bytes, 0);
                 break;
             case "'":
                 MoveText(0, -State.Leading);
-                if (o.Count > 0 && o[^1] is PdfString q1) ShowString(q1.Bytes, 0);
+                if (LastOperand<PdfString>(o) is { } q1) ShowString(q1.Bytes, 0);
                 break;
             case "\"":
                 if (o.Count >= 3 && o[^3] is PdfNumber aw && o[^2] is PdfNumber ac)
@@ -347,23 +393,25 @@ internal class ContentProcessor
                     State.CharSpacing = ac.Value;
                 }
                 MoveText(0, -State.Leading);
-                if (o.Count > 0 && o[^1] is PdfString q2) ShowString(q2.Bytes, 0);
+                if (LastOperand<PdfString>(o) is { } q2) ShowString(q2.Bytes, 0);
                 break;
             case "TJ":
-                if (o.Count > 0 && o[^1] is PdfArray items) ShowArray(items);
-                break;
-            case "Do":
-                if (o.Count > 0 && o[^1] is PdfName xobject) DoXObject(xobject);
-                break;
-            case "BI":
-                if (op.InlineImageDictionary != null)
-                    Listener.OnImage(new ImageRenderInfo
-                    {
-                        Ctm = State.Ctm, InlineDictionary = op.InlineImageDictionary, InlineData = op.InlineImageData,
-                    });
+                if (LastOperand<PdfArray>(o) is { } items) ShowArray(items);
                 break;
         }
     }
+
+    private void ReportInlineImage(ContentOperation op)
+    {
+        if (op.InlineImageDictionary == null) return;
+        Listener.OnImage(new ImageRenderInfo
+        {
+            Ctm = State.Ctm, InlineDictionary = op.InlineImageDictionary, InlineData = op.InlineImageData,
+        });
+    }
+
+    private static T? LastOperand<T>(List<PdfObject> operands) where T : PdfObject =>
+        operands.Count > 0 ? operands[^1] as T : null;
 
     private static double[]? Num(List<PdfObject> operands, int count)
     {

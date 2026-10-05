@@ -30,73 +30,95 @@ internal sealed class CMap
 
     public static CMap Unicode() => new() { IsUnicode = true };
 
+    /// <summary>A CMap operand: a string, number, name, or array bracket.</summary>
+    private readonly record struct CMapOperand(PdfTokenType Type, byte[] Bytes, double Number, string Text);
+
     public static CMap Parse(byte[] data)
     {
         var cmap = new CMap();
         var lexer = new PdfLexer(data);
-        var operands = new List<(PdfTokenType Type, byte[] Bytes, double Number, string Text)>();
+        var operands = new List<CMapOperand>();
         int entries = 0;
         while (lexer.Next())
         {
-            switch (lexer.TokenType)
-            {
-                case PdfTokenType.HexString:
-                case PdfTokenType.String:
-                    operands.Add((lexer.TokenType, lexer.StringBytes, 0, ""));
-                    break;
-                case PdfTokenType.Number:
-                    operands.Add((PdfTokenType.Number, Array.Empty<byte>(), lexer.NumberValue, ""));
-                    break;
-                case PdfTokenType.Name:
-                    operands.Add((PdfTokenType.Name, Array.Empty<byte>(), 0, lexer.Text));
-                    break;
-                case PdfTokenType.ArrayStart:
-                    operands.Add((PdfTokenType.ArrayStart, Array.Empty<byte>(), 0, ""));
-                    break;
-                case PdfTokenType.ArrayEnd:
-                    operands.Add((PdfTokenType.ArrayEnd, Array.Empty<byte>(), 0, ""));
-                    break;
-                case PdfTokenType.Keyword:
-                    switch (lexer.Text)
-                    {
-                        case "endcodespacerange":
-                            for (int i = 0; i + 1 < operands.Count; i += 2)
-                                if (operands[i].Bytes.Length is > 0 and <= 4 && operands[i].Bytes.Length == operands[i + 1].Bytes.Length)
-                                    cmap._codespaces.Add((operands[i].Bytes.Length, operands[i].Bytes, operands[i + 1].Bytes));
-                            break;
-                        case "endbfchar":
-                            for (int i = 0; i + 1 < operands.Count; i += 2)
-                                if (operands[i].Type is PdfTokenType.HexString or PdfTokenType.String)
-                                    cmap._unicode[ToInt(operands[i].Bytes)] = DecodeUtf16(operands[i + 1]);
-                            break;
-                        case "endbfrange":
-                            entries += ReadBfRanges(cmap, operands, MaxRangeEntries - entries);
-                            break;
-                        case "endcidchar":
-                            for (int i = 0; i + 1 < operands.Count; i += 2)
-                                if (operands[i + 1].Type == PdfTokenType.Number)
-                                    cmap._cids[ToInt(operands[i].Bytes)] = (int)operands[i + 1].Number;
-                            break;
-                        case "endcidrange":
-                            for (int i = 0; i + 2 < operands.Count; i += 3)
-                                if (operands[i + 2].Type == PdfTokenType.Number)
-                                    cmap._cidRanges.Add((ToInt(operands[i].Bytes), ToInt(operands[i + 1].Bytes), (int)operands[i + 2].Number));
-                            break;
-                    }
-                    if (lexer.Text.StartsWith("end", StringComparison.Ordinal) || lexer.Text.StartsWith("begin", StringComparison.Ordinal)
-                        || lexer.Text is "def" or "usecmap")
-                        operands.Clear();
-                    break;
-                case PdfTokenType.DictStart:
-                case PdfTokenType.DictEnd:
-                    break;
-            }
+            if (lexer.TokenType == PdfTokenType.Keyword)
+                entries += cmap.ApplyKeyword(lexer.Text, operands, MaxRangeEntries - entries);
+            else if (OperandAt(lexer) is { } operand)
+                operands.Add(operand);
             if (operands.Count > 100_000) operands.Clear(); // garbage, not a CMap
         }
         return cmap;
     }
 
-    private static int ReadBfRanges(CMap cmap, List<(PdfTokenType Type, byte[] Bytes, double Number, string Text)> ops, int budget)
+    private static CMapOperand? OperandAt(PdfLexer lexer) => lexer.TokenType switch
+    {
+        PdfTokenType.HexString or PdfTokenType.String => new(lexer.TokenType, lexer.StringBytes, 0, ""),
+        PdfTokenType.Number => new(PdfTokenType.Number, Array.Empty<byte>(), lexer.NumberValue, ""),
+        PdfTokenType.Name => new(PdfTokenType.Name, Array.Empty<byte>(), 0, lexer.Text),
+        PdfTokenType.ArrayStart or PdfTokenType.ArrayEnd => new(lexer.TokenType, Array.Empty<byte>(), 0, ""),
+        _ => null,
+    };
+
+    /// <summary>
+    /// Applies a CMap operator to the operands collected before it. Returns how many bfrange
+    /// entries it added, which count against <paramref name="budget"/>.
+    /// </summary>
+    private int ApplyKeyword(string keyword, List<CMapOperand> operands, int budget)
+    {
+        int added = 0;
+        switch (keyword)
+        {
+            case "endcodespacerange":
+                ReadCodespaceRanges(operands);
+                break;
+            case "endbfchar":
+                ReadBfChars(operands);
+                break;
+            case "endbfrange":
+                added = ReadBfRanges(operands, budget);
+                break;
+            case "endcidchar":
+                ReadCidChars(operands);
+                break;
+            case "endcidrange":
+                ReadCidRanges(operands);
+                break;
+        }
+        if (keyword.StartsWith("end", StringComparison.Ordinal) || keyword.StartsWith("begin", StringComparison.Ordinal)
+            || keyword is "def" or "usecmap")
+            operands.Clear();
+        return added;
+    }
+
+    private void ReadCodespaceRanges(List<CMapOperand> operands)
+    {
+        for (int i = 0; i + 1 < operands.Count; i += 2)
+            if (operands[i].Bytes.Length is > 0 and <= 4 && operands[i].Bytes.Length == operands[i + 1].Bytes.Length)
+                _codespaces.Add((operands[i].Bytes.Length, operands[i].Bytes, operands[i + 1].Bytes));
+    }
+
+    private void ReadBfChars(List<CMapOperand> operands)
+    {
+        for (int i = 0; i + 1 < operands.Count; i += 2)
+            if (operands[i].Type is PdfTokenType.HexString or PdfTokenType.String)
+                _unicode[ToInt(operands[i].Bytes)] = DecodeUtf16(operands[i + 1]);
+    }
+
+    private void ReadCidChars(List<CMapOperand> operands)
+    {
+        for (int i = 0; i + 1 < operands.Count; i += 2)
+            if (operands[i + 1].Type == PdfTokenType.Number)
+                _cids[ToInt(operands[i].Bytes)] = (int)operands[i + 1].Number;
+    }
+
+    private void ReadCidRanges(List<CMapOperand> operands)
+    {
+        for (int i = 0; i + 2 < operands.Count; i += 3)
+            if (operands[i + 2].Type == PdfTokenType.Number)
+                _cidRanges.Add((ToInt(operands[i].Bytes), ToInt(operands[i + 1].Bytes), (int)operands[i + 2].Number));
+    }
+
+    private int ReadBfRanges(List<CMapOperand> ops, int budget)
     {
         int added = 0;
         int i = 0;
@@ -106,31 +128,46 @@ internal sealed class CMap
             if (high < low || high - low > 0xFFFF) { i += 3; continue; }
             if (ops[i + 2].Type == PdfTokenType.ArrayStart)
             {
-                int j = i + 3;
-                for (int code = low; j < ops.Count && ops[j].Type != PdfTokenType.ArrayEnd; j++, code++)
-                {
-                    if (code <= high && added++ < budget) cmap._unicode[code] = DecodeUtf16(ops[j]);
-                }
-                i = j + 1;
+                i = ReadBfRangeArray(ops, i + 3, low, high, budget, ref added);
                 continue;
             }
-            byte[] start = ops[i + 2].Bytes;
-            for (int code = low; code <= high && added < budget; code++, added++)
-            {
-                // Increment the destination's last byte per code, carrying into earlier bytes.
-                var dest = (byte[])start.Clone();
-                int offset = code - low;
-                for (int k = dest.Length - 1; k >= 0 && offset > 0; k--)
-                {
-                    int v = dest[k] + offset;
-                    dest[k] = (byte)v;
-                    offset = v >> 8;
-                }
-                cmap._unicode[code] = DecodeUtf16Bytes(dest);
-            }
+            ReadBfRangeFromStart(ops[i + 2].Bytes, low, high, budget, ref added);
             i += 3;
         }
         return added;
+    }
+
+    /// <summary>
+    /// Maps <paramref name="low"/> upwards to the destinations listed from <paramref name="j"/>
+    /// up to the closing bracket. Returns the index just past that bracket.
+    /// </summary>
+    private int ReadBfRangeArray(List<CMapOperand> ops, int j, int low, int high, int budget, ref int added)
+    {
+        for (int code = low; j < ops.Count && ops[j].Type != PdfTokenType.ArrayEnd; j++, code++)
+        {
+            if (code <= high && added++ < budget) _unicode[code] = DecodeUtf16(ops[j]);
+        }
+        return j + 1;
+    }
+
+    /// <summary>Maps each code in the range to <paramref name="start"/> advanced by the code's offset in it.</summary>
+    private void ReadBfRangeFromStart(byte[] start, int low, int high, int budget, ref int added)
+    {
+        for (int code = low; code <= high && added < budget; code++, added++)
+            _unicode[code] = DecodeUtf16Bytes(Advance(start, code - low));
+    }
+
+    /// <summary>Increments the destination's last byte by <paramref name="offset"/>, carrying into earlier bytes.</summary>
+    private static byte[] Advance(byte[] start, int offset)
+    {
+        var dest = (byte[])start.Clone();
+        for (int k = dest.Length - 1; k >= 0 && offset > 0; k--)
+        {
+            int v = dest[k] + offset;
+            dest[k] = (byte)v;
+            offset = v >> 8;
+        }
+        return dest;
     }
 
     private static int ToInt(byte[] bytes)
@@ -140,7 +177,7 @@ internal sealed class CMap
         return v;
     }
 
-    private static string DecodeUtf16((PdfTokenType Type, byte[] Bytes, double Number, string Text) op) =>
+    private static string DecodeUtf16(CMapOperand op) =>
         op.Type == PdfTokenType.Name ? GlyphList.ToUnicode(op.Text) ?? "" : DecodeUtf16Bytes(op.Bytes);
 
     private static string DecodeUtf16Bytes(byte[] bytes)
