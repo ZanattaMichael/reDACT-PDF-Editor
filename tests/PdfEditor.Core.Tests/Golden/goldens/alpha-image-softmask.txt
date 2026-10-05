@@ -16,7 +16,7 @@ page 1: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == redact ==
-bytes: ~1536
+bytes: ~1024
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -27,7 +27,6 @@ page 1: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
   typeset: Helvetica@10.0
   ops: BTx1 ETx1 Qx2 Tdx1 Tfx1 Tjx1 cmx1 fx1 gx1 qx2 rex1 rgx1
   font F1: subtype=Type1 base=Helvetica toUnicode=no widths=0
-  xobject Im1: subtype=Image size=8x8 cs=/DeviceRGB bpc=8 filter=/FlateDecode smask=yes mask=no
 acroform: none
 validation: clean
 == replace-region-text ==
