@@ -84,17 +84,24 @@ internal sealed class PdfImporter
             var destination = CopiedDestination(item, named);
             if (destination == null && children.Count == 0) continue;
 
-            var copy = new PdfDictionary();
-            _target.MakeIndirect(copy);
-            copy.Put(PdfName.Title, item.Get(PdfName.Title) is PdfString title
-                ? new PdfString((byte[])title.Bytes.Clone(), title.IsHex) : PdfString.FromText(""));
-            if (destination != null) copy.Put(PdfName.Dest, destination);
-            foreach (var key in new[] { PdfName.Of("C"), PdfName.F })
-                if (item.Get(key) is PdfArray or PdfNumber) copy.Put(key, CopyDirect(item.Get(key)!, 0));
+            var copy = CopyOutlineEntry(item, destination);
             bool open = (item.GetAsNumber(PdfName.Count)?.Value ?? 0) >= 0;
             result.Add(new OutlineItem(copy, open, children));
         }
         return result;
+    }
+
+    /// <summary>The bookmark's own entries, copied: title, destination, colour and style.</summary>
+    private PdfDictionary CopyOutlineEntry(PdfDictionary item, PdfArray? destination)
+    {
+        var copy = new PdfDictionary();
+        _target.MakeIndirect(copy);
+        copy.Put(PdfName.Title, item.Get(PdfName.Title) is PdfString title
+            ? new PdfString((byte[])title.Bytes.Clone(), title.IsHex) : PdfString.FromText(""));
+        if (destination != null) copy.Put(PdfName.Dest, destination);
+        foreach (var key in new[] { PdfName.Of("C"), PdfName.F })
+            if (item.Get(key) is PdfArray or PdfNumber) copy.Put(key, CopyDirect(item.Get(key)!, 0));
+        return copy;
     }
 
     /// <summary>
@@ -196,35 +203,42 @@ internal sealed class PdfImporter
             if (key.Equals(PdfName.Parent) || key.Equals(PdfName.Of("B")) || key.Equals(PdfName.Annots)) continue;
             copy.Put(key, Copy(src.GetRaw(key)!));
         }
-        // Attributes the page inherited from its tree have to travel with it.
-        foreach (var key in new[] { PdfName.Resources, PdfName.MediaBox, PdfName.CropBox, PdfName.Rotate })
-            if (!copy.ContainsKey(key) && page.GetInherited(key) is { } inherited)
-                copy.Put(key, Copy(inherited));
+        CopyInheritedAttributes(page, copy);
 
         if (src.GetAsArray(PdfName.Annots) is { } annots)
         {
             var copiedAnnots = new PdfArray();
             foreach (var annot in annots)
-            {
-                if (annot is not PdfDictionary a) continue;
-                // Annotations belong to exactly one page, so each page copy gets its own.
-                var annotCopy = new PdfDictionary();
-                _target.MakeIndirect(annotCopy);
-                foreach (var key in a.Keys)
-                {
-                    if (key.Equals(PdfName.P)) continue;
-                    // A widget's /Parent is its form field, whose tree reaches the rest of the
-                    // form; the widget keeps its own appearance and stops being a field here.
-                    if (key.Equals(PdfName.Parent) && a.Is(PdfName.Widget, PdfName.Subtype)) continue;
-                    if (key.Equals(PdfName.Popup)) continue;
-                    annotCopy.Put(key, Copy(a.GetRaw(key)!));
-                }
-                annotCopy.Put(PdfName.P, copy);
-                copiedAnnots.Add(annotCopy);
-            }
+                if (annot is PdfDictionary a) copiedAnnots.Add(CopyAnnotation(a, copy));
             if (copiedAnnots.Count > 0) copy.Put(PdfName.Annots, copiedAnnots);
         }
         return copy;
+    }
+
+    /// <summary>Attributes the page inherited from its tree have to travel with it.</summary>
+    private void CopyInheritedAttributes(PdfPage page, PdfDictionary copy)
+    {
+        foreach (var key in new[] { PdfName.Resources, PdfName.MediaBox, PdfName.CropBox, PdfName.Rotate })
+            if (!copy.ContainsKey(key) && page.GetInherited(key) is { } inherited)
+                copy.Put(key, Copy(inherited));
+    }
+
+    /// <summary>Annotations belong to exactly one page, so each page copy gets its own.</summary>
+    private PdfDictionary CopyAnnotation(PdfDictionary a, PdfDictionary pageCopy)
+    {
+        var annotCopy = new PdfDictionary();
+        _target.MakeIndirect(annotCopy);
+        foreach (var key in a.Keys)
+        {
+            if (key.Equals(PdfName.P)) continue;
+            // A widget's /Parent is its form field, whose tree reaches the rest of the
+            // form; the widget keeps its own appearance and stops being a field here.
+            if (key.Equals(PdfName.Parent) && a.Is(PdfName.Widget, PdfName.Subtype)) continue;
+            if (key.Equals(PdfName.Popup)) continue;
+            annotCopy.Put(key, Copy(a.GetRaw(key)!));
+        }
+        annotCopy.Put(PdfName.P, pageCopy);
+        return annotCopy;
     }
 
     /// <summary>

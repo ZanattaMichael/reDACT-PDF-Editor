@@ -156,23 +156,20 @@ internal sealed class LocationTextExtraction : IContentListener
         for (int m = 0; m < chunks.Count; m++)
         {
             var mark = chunks[m];
-            if (!mark.Location.IsZeroLength)
-            {
-                toSort.Add(mark);
-                continue;
-            }
-            bool attached = false;
-            for (int b = 0; b < chunks.Count && !attached; b++)
-            {
-                if (b == m || chunks[b].Location.IsZeroLength || !ContainsMark(chunks[b].Location, mark.Location)) continue;
-                Attach(m < b ? before : after, chunks[b], mark);
-                attached = true;
-            }
-            if (!attached) toSort.Add(mark);
+            int host = mark.Location.IsZeroLength ? HostOf(chunks, m) : -1;
+            if (host < 0) toSort.Add(mark);
+            else Attach(m < host ? before : after, chunks[host], mark);
         }
         var sorted = toSort.OrderBy(c => c.Location, Comparer<TextChunkLocation>.Create(TextChunkLocation.Compare)).ToList();
         if (before.Count == 0 && after.Count == 0) return sorted;
-        var result = new List<TextChunk>(chunks.Count);
+        return WithMarks(sorted, before, after, chunks.Count);
+    }
+
+    /// <summary>The sorted chunks with each one's attached marks put back on either side of it.</summary>
+    private static List<TextChunk> WithMarks(List<TextChunk> sorted, Dictionary<TextChunk, List<TextChunk>> before,
+        Dictionary<TextChunk, List<TextChunk>> after, int capacity)
+    {
+        var result = new List<TextChunk>(capacity);
         foreach (var chunk in sorted)
         {
             if (before.TryGetValue(chunk, out var b)) result.AddRange(b);
@@ -180,6 +177,20 @@ internal sealed class LocationTextExtraction : IContentListener
             if (after.TryGetValue(chunk, out var a)) result.AddRange(a);
         }
         return result;
+    }
+
+    /// <summary>
+    /// The first chunk with a length that contains the zero-length chunk at <paramref name="m"/>,
+    /// or -1 when none does.
+    /// </summary>
+    private static int HostOf(List<TextChunk> chunks, int m)
+    {
+        for (int b = 0; b < chunks.Count; b++)
+        {
+            if (b == m || chunks[b].Location.IsZeroLength || !ContainsMark(chunks[b].Location, chunks[m].Location)) continue;
+            return b;
+        }
+        return -1;
     }
 
     private static void Attach(Dictionary<TextChunk, List<TextChunk>> marks, TextChunk to, TextChunk mark)
@@ -230,50 +241,56 @@ internal sealed class RegexTextLocator : IContentListener
     public List<TextLocation> GetLocations()
     {
         var sorted = _glyphs.OrderBy(g => g.Location, Comparer<TextChunkLocation>.Create(TextChunkLocation.Compare)).ToList();
-
-        // Build the text with a map from character index to glyph index.
-        var sb = new StringBuilder();
-        var indexMap = new Dictionary<int, int>();
-        for (int i = 0; i < sorted.Count; i++)
-        {
-            var (glyph, location, _) = sorted[i];
-            if (i > 0)
-            {
-                var previous = sorted[i - 1];
-                if (location.SameLine(previous.Location))
-                {
-                    if (location.IsAtWordBoundary(previous.Location) && !glyph.Text.StartsWith(' ') && !glyph.Text.EndsWith(' '))
-                        sb.Append(' ');
-                }
-                else
-                {
-                    sb.Append('\n');
-                }
-            }
-            foreach (char _ in glyph.Text)
-            {
-                indexMap[sb.Length] = i;
-                sb.Append(_);
-            }
-        }
-
-        string text = sb.ToString();
+        string text = BuildText(sorted, out var indexMap);
         var results = new List<TextLocation>();
         foreach (Match match in _pattern.Matches(text))
-        {
-            if (match.Length == 0) continue;
-            int? start = StartIndex(indexMap, match.Index, text.Length);
-            int? end = EndIndex(indexMap, match.Index + match.Length - 1);
-            if (start is not int s || end is not int e || s > e) continue;
-            foreach (var rect in LineRectangles(sorted, s, e))
-                results.Add(new TextLocation(match.Value, rect));
-        }
+            results.AddRange(MatchLocations(match, text.Length, indexMap, sorted));
         // Stable, position-ordered output (bottom to top, then left to right), duplicates removed —
         // two glyphs drawn on top of each other (a ligature, a fake-bold overprint) give one hit.
         return results
             .OrderBy(r => r.Rect.Y).ThenBy(r => r.Rect.X)
             .Distinct()
             .ToList();
+    }
+
+    /// <summary>The text in reading order, with a map from character index to glyph index.</summary>
+    private static string BuildText(List<(GlyphRenderInfo Glyph, TextChunkLocation Location, PdfRect Box)> sorted,
+        out Dictionary<int, int> indexMap)
+    {
+        var sb = new StringBuilder();
+        indexMap = new Dictionary<int, int>();
+        for (int i = 0; i < sorted.Count; i++)
+        {
+            var (glyph, location, _) = sorted[i];
+            if (i > 0) AppendSeparator(sb, glyph, location, sorted[i - 1].Location);
+            foreach (char _ in glyph.Text)
+            {
+                indexMap[sb.Length] = i;
+                sb.Append(_);
+            }
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>A newline between lines; a space where glyphs on one line are a word apart.</summary>
+    private static void AppendSeparator(StringBuilder sb, GlyphRenderInfo glyph, TextChunkLocation location,
+        TextChunkLocation previous)
+    {
+        if (!location.SameLine(previous))
+            sb.Append('\n');
+        else if (location.IsAtWordBoundary(previous) && !glyph.Text.StartsWith(' ') && !glyph.Text.EndsWith(' '))
+            sb.Append(' ');
+    }
+
+    /// <summary>One location per line a match spans; none for an empty match or one no glyph drew.</summary>
+    private static IEnumerable<TextLocation> MatchLocations(Match match, int textLength, Dictionary<int, int> indexMap,
+        List<(GlyphRenderInfo Glyph, TextChunkLocation Location, PdfRect Box)> sorted)
+    {
+        if (match.Length == 0) return Enumerable.Empty<TextLocation>();
+        int? start = StartIndex(indexMap, match.Index, textLength);
+        int? end = EndIndex(indexMap, match.Index + match.Length - 1);
+        if (start is not int s || end is not int e || s > e) return Enumerable.Empty<TextLocation>();
+        return LineRectangles(sorted, s, e).Select(rect => new TextLocation(match.Value, rect));
     }
 
     private static int? StartIndex(Dictionary<int, int> map, int index, int length)

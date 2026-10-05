@@ -132,23 +132,33 @@ internal static class PdfImages
             if (data[p] != 0xFF) return false;
             byte marker = data[p + 1];
             if (marker == 0xFF) { p++; continue; }
-            if (marker is 0xD8 or 0x01 || (marker >= 0xD0 && marker <= 0xD7)) { p += 2; continue; }
+            if (IsStandaloneMarker(marker)) { p += 2; continue; }
             int length = data[p + 2] << 8 | data[p + 3];
             if (length < 2 || p + 2 + length > data.Length) return false;
-            if (marker == 0xEE && length >= 12 && data[p + 4] == 'A' && data[p + 5] == 'd' && data[p + 6] == 'o')
-                adobeInverted = true; // Adobe-written CMYK JPEGs store inverted values
-            bool sof = marker is >= 0xC0 and <= 0xCF && marker is not (0xC4 or 0xC8 or 0xCC);
-            if (sof)
-            {
-                if (length < 8) return false;
-                height = data[p + 5] << 8 | data[p + 6];
-                width = data[p + 7] << 8 | data[p + 8];
-                components = data[p + 9];
-                return width > 0 && height > 0 && components is 1 or 3 or 4;
-            }
+            adobeInverted |= IsAdobeSegment(data, p, marker, length);
+            if (IsStartOfFrame(marker)) return TryReadFrame(data, p, length, out width, out height, out components);
             p += 2 + length;
         }
         return false;
+    }
+
+    /// <summary>Markers that stand alone, with no length or segment after them.</summary>
+    private static bool IsStandaloneMarker(byte marker) => marker is 0xD8 or 0x01 || (marker >= 0xD0 && marker <= 0xD7);
+
+    /// <summary>Adobe-written CMYK JPEGs store inverted values, and say so in an APP14 "Adobe" segment.</summary>
+    private static bool IsAdobeSegment(byte[] data, int p, byte marker, int length) =>
+        marker == 0xEE && length >= 12 && data[p + 4] == 'A' && data[p + 5] == 'd' && data[p + 6] == 'o';
+
+    private static bool IsStartOfFrame(byte marker) => marker is >= 0xC0 and <= 0xCF && marker is not (0xC4 or 0xC8 or 0xCC);
+
+    private static bool TryReadFrame(byte[] data, int p, int length, out int width, out int height, out int components)
+    {
+        width = height = components = 0;
+        if (length < 8) return false;
+        height = data[p + 5] << 8 | data[p + 6];
+        width = data[p + 7] << 8 | data[p + 8];
+        components = data[p + 9];
+        return width > 0 && height > 0 && components is 1 or 3 or 4;
     }
 
     // ------------------------------------------------------------------ decoding
@@ -181,12 +191,7 @@ internal static class PdfImages
 
             string? codec = filters.LastOrDefault(PdfFilters.IsImageFilter);
             byte[] data = decode();
-            if (codec is "DCTDecode" or "DCT")
-            {
-                var jpeg = SkiaDecode(data);
-                if (jpeg == null) failure = "the JPEG data could not be decoded";
-                return jpeg;
-            }
+            if (codec is "DCTDecode" or "DCT") return DecodeJpeg(data, out failure);
             if (codec != null) { failure = $"images compressed with /{codec} cannot be decoded by this editor"; return null; }
 
             bool mask = image.GetAsBool(PdfName.ImageMask) == true;
@@ -201,24 +206,7 @@ internal static class PdfImages
             if ((long)rowBytes * height > data.Length) { failure = "the image data is shorter than its dimensions require"; return null; }
 
             var bitmap = new SKBitmap(new SKImageInfo(width, height, SKColorType.Rgba8888, SKAlphaType.Unpremul));
-            var pixels = new byte[width * height * 4];
-            var samples = new int[converter.Components];
-            int max = (1 << bpc) - 1;
-            for (int y = 0; y < height; y++)
-            {
-                int rowStart = y * rowBytes;
-                for (int x = 0; x < width; x++)
-                {
-                    for (int c = 0; c < converter.Components; c++)
-                        samples[c] = Sample(data, rowStart, (x * converter.Components + c) * bpc, bpc);
-                    var (r, g, b) = converter.ToRgb(samples, max);
-                    int o = (y * width + x) * 4;
-                    pixels[o] = r;
-                    pixels[o + 1] = g;
-                    pixels[o + 2] = b;
-                    pixels[o + 3] = 255;
-                }
-            }
+            var pixels = DecodePixels(data, width, height, rowBytes, converter, bpc);
             Marshal.Copy(pixels, 0, bitmap.GetPixels(), pixels.Length);
             return bitmap;
         }
@@ -228,6 +216,37 @@ internal static class PdfImages
             failure = $"decoding threw {e.GetType().Name}: {e.Message}";
             return null;
         }
+    }
+
+    private static SKBitmap? DecodeJpeg(byte[] data, out string? failure)
+    {
+        var jpeg = SkiaDecode(data);
+        failure = jpeg == null ? "the JPEG data could not be decoded" : null;
+        return jpeg;
+    }
+
+    /// <summary>Unpacks the samples row by row into opaque RGBA pixels.</summary>
+    private static byte[] DecodePixels(byte[] data, int width, int height, int rowBytes, Converter converter, int bpc)
+    {
+        var pixels = new byte[width * height * 4];
+        var samples = new int[converter.Components];
+        int max = (1 << bpc) - 1;
+        for (int y = 0; y < height; y++)
+        {
+            int rowStart = y * rowBytes;
+            for (int x = 0; x < width; x++)
+            {
+                for (int c = 0; c < converter.Components; c++)
+                    samples[c] = Sample(data, rowStart, (x * converter.Components + c) * bpc, bpc);
+                var (r, g, b) = converter.ToRgb(samples, max);
+                int o = (y * width + x) * 4;
+                pixels[o] = r;
+                pixels[o + 1] = g;
+                pixels[o + 2] = b;
+                pixels[o + 3] = 255;
+            }
+        }
+        return pixels;
     }
 
     private static int Sample(byte[] data, int rowStart, int bitOffset, int bpc)
@@ -272,53 +291,71 @@ internal static class PdfImages
                 _ => null,
             };
             bool invert = decode is { Count: >= 2 } && decode.GetNumber(0) > decode.GetNumber(1);
-            byte Scale(int v, int max) => (byte)(invert ? 255 - v * 255 / max : v * 255 / max);
             switch (family)
             {
-                case "DeviceGray" or "G" or "CalGray":
-                    return new Converter { Components = 1, _map = (s, max) => { byte g = Scale(s[0], max); return (g, g, g); } };
-                case "DeviceRGB" or "RGB" or "CalRGB":
-                    return new Converter { Components = 3, _map = (s, max) => (Scale(s[0], max), Scale(s[1], max), Scale(s[2], max)) };
-                case "DeviceCMYK" or "CMYK":
-                    return new Converter
-                    {
-                        Components = 4,
-                        _map = (s, max) =>
-                        {
-                            double c = Scale(s[0], max) / 255.0, m = Scale(s[1], max) / 255.0;
-                            double y = Scale(s[2], max) / 255.0, k = Scale(s[3], max) / 255.0;
-                            return ((byte)(255 * (1 - c) * (1 - k)), (byte)(255 * (1 - m) * (1 - k)), (byte)(255 * (1 - y) * (1 - k)));
-                        },
-                    };
+                case "DeviceGray" or "G" or "CalGray" or "DeviceRGB" or "RGB" or "CalRGB" or "DeviceCMYK" or "CMYK":
+                    return ForDevice(family, invert);
                 case "ICCBased" when colorSpace is PdfArray icc:
                     int n = icc.GetAsStream(1)?.GetAsInt(PdfName.N) ?? 3;
                     return For(n switch { 1 => PdfName.DeviceGray, 4 => PdfName.DeviceCMYK, _ => PdfName.DeviceRGB }, decode, bpc);
                 case "Indexed" or "I" when colorSpace is PdfArray indexed:
-                    var baseConverter = For(indexed.Get(1), null, 8);
-                    int hival = indexed.GetAsNumber(2)?.IntValue() ?? 0;
-                    byte[] lookup = indexed.Get(3) switch
-                    {
-                        PdfString s => s.Bytes,
-                        PdfStream st => st.GetDecodedBytes(),
-                        _ => Array.Empty<byte>(),
-                    };
-                    if (baseConverter == null) return null;
-                    int comps = baseConverter.Components;
-                    return new Converter
-                    {
-                        Components = 1,
-                        _map = (s, _) =>
-                        {
-                            int index = Math.Clamp(s[0], 0, hival) * comps;
-                            if (index + comps > lookup.Length) return (0, 0, 0);
-                            var entry = new int[comps];
-                            for (int k = 0; k < comps; k++) entry[k] = lookup[index + k];
-                            return baseConverter._map(entry, 255);
-                        },
-                    };
+                    return ForIndexed(indexed);
                 default:
                     return null;
             }
+        }
+
+        private static byte Scale(int v, int max, bool invert) => (byte)(invert ? 255 - v * 255 / max : v * 255 / max);
+
+        private static Converter? ForDevice(string family, bool invert) => family switch
+        {
+            "DeviceGray" or "G" or "CalGray" => new Converter
+            {
+                Components = 1,
+                _map = (s, max) => { byte g = Scale(s[0], max, invert); return (g, g, g); },
+            },
+            "DeviceRGB" or "RGB" or "CalRGB" => new Converter
+            {
+                Components = 3,
+                _map = (s, max) => (Scale(s[0], max, invert), Scale(s[1], max, invert), Scale(s[2], max, invert)),
+            },
+            "DeviceCMYK" or "CMYK" => new Converter
+            {
+                Components = 4,
+                _map = (s, max) =>
+                {
+                    double c = Scale(s[0], max, invert) / 255.0, m = Scale(s[1], max, invert) / 255.0;
+                    double y = Scale(s[2], max, invert) / 255.0, k = Scale(s[3], max, invert) / 255.0;
+                    return ((byte)(255 * (1 - c) * (1 - k)), (byte)(255 * (1 - m) * (1 - k)), (byte)(255 * (1 - y) * (1 - k)));
+                },
+            },
+            _ => null,
+        };
+
+        private static Converter? ForIndexed(PdfArray indexed)
+        {
+            var baseConverter = For(indexed.Get(1), null, 8);
+            int hival = indexed.GetAsNumber(2)?.IntValue() ?? 0;
+            byte[] lookup = indexed.Get(3) switch
+            {
+                PdfString s => s.Bytes,
+                PdfStream st => st.GetDecodedBytes(),
+                _ => Array.Empty<byte>(),
+            };
+            if (baseConverter == null) return null;
+            int comps = baseConverter.Components;
+            return new Converter
+            {
+                Components = 1,
+                _map = (s, _) =>
+                {
+                    int index = Math.Clamp(s[0], 0, hival) * comps;
+                    if (index + comps > lookup.Length) return (0, 0, 0);
+                    var entry = new int[comps];
+                    for (int k = 0; k < comps; k++) entry[k] = lookup[index + k];
+                    return baseConverter._map(entry, 255);
+                },
+            };
         }
     }
 

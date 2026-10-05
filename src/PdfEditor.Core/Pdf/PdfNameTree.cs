@@ -11,20 +11,20 @@ internal static class PdfNameTree
     public static List<(PdfString Key, PdfObject Value)> Read(PdfDictionary? root)
     {
         var entries = new List<(PdfString, PdfObject)>();
-        var seen = new HashSet<PdfDictionary>(ReferenceEqualityComparer.Instance);
-        Walk(root, 0);
+        Walk(root, 0, entries, new HashSet<PdfDictionary>(ReferenceEqualityComparer.Instance));
         return entries;
+    }
 
-        void Walk(PdfDictionary? node, int depth)
-        {
-            if (node == null || depth > 64 || !seen.Add(node)) return;
-            if (node.GetAsArray(PdfName.Names) is { } names)
-                for (int i = 0; i + 1 < names.Count; i += 2)
-                    if (names.Get(i) is PdfString key) entries.Add((key, names.Get(i + 1)!));
-            if (node.GetAsArray(PdfName.Kids) is { } kids)
-                foreach (var kid in kids)
-                    if (kid is PdfDictionary k) Walk(k, depth + 1);
-        }
+    private static void Walk(PdfDictionary? node, int depth, List<(PdfString, PdfObject)> entries,
+        HashSet<PdfDictionary> seen)
+    {
+        if (node == null || depth > 64 || !seen.Add(node)) return;
+        if (node.GetAsArray(PdfName.Names) is { } names)
+            for (int i = 0; i + 1 < names.Count; i += 2)
+                if (names.Get(i) is PdfString key) entries.Add((key, names.Get(i + 1)!));
+        if (node.GetAsArray(PdfName.Kids) is { } kids)
+            foreach (var kid in kids)
+                if (kid is PdfDictionary k) Walk(k, depth + 1, entries, seen);
     }
 
     /// <summary>Writes <paramref name="entries"/> as the tree under catalog /Names /<paramref name="tree"/>.</summary>

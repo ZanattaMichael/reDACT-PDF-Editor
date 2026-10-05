@@ -237,24 +237,27 @@ internal sealed partial class PdfDocument
 
         long xrefOffset = output.Position;
         if (PreviousSectionIsStream(prevXref))
-        {
             WriteXrefStream(output, offsets, trailer, size, writer);
-        }
         else
-        {
-            trailer.Put(PdfName.Size, new PdfNumber(size));
-            WriteAscii(output, "xref\n");
-            foreach (var (start, count) in Runs(offsets.Keys))
-            {
-                WriteAscii(output, $"{start} {count}\n");
-                for (int n = start; n < start + count; n++)
-                    WriteAscii(output, offsets[n].ToString("D10", CultureInfo.InvariantCulture) + " 00000 n\r\n");
-            }
-            WriteAscii(output, "trailer\n");
-            writer.WriteObject(output, trailer, 0, 0, encrypt: false, topLevel: true);
-        }
+            WriteXrefTable(output, offsets, trailer, size, writer);
         WriteAscii(output, $"\nstartxref\n{xrefOffset.ToString(CultureInfo.InvariantCulture)}\n%%EOF\n");
         return output.ToArray();
+    }
+
+    /// <summary>A classic cross-reference table and trailer for the update.</summary>
+    private static void WriteXrefTable(Stream output, SortedDictionary<int, long> offsets, PdfDictionary trailer,
+        int size, ObjectWriter writer)
+    {
+        trailer.Put(PdfName.Size, new PdfNumber(size));
+        WriteAscii(output, "xref\n");
+        foreach (var (start, count) in Runs(offsets.Keys))
+        {
+            WriteAscii(output, $"{start} {count}\n");
+            for (int n = start; n < start + count; n++)
+                WriteAscii(output, offsets[n].ToString("D10", CultureInfo.InvariantCulture) + " 00000 n\r\n");
+        }
+        WriteAscii(output, "trailer\n");
+        writer.WriteObject(output, trailer, 0, 0, encrypt: false, topLevel: true);
     }
 
     private int PreviousStartXref()
@@ -413,21 +416,8 @@ internal sealed partial class PdfDocument
 
             if (!topLevel)
             {
-                // A nested value that is an indirect object — or a stream, which must be — is
-                // written as a reference to it.
-                var target = PdfReference.Deref(obj);
-                if (obj is PdfReference && target is PdfNull)
-                {
-                    WriteAscii(output, "null");
-                    return;
-                }
-                if (obj is PdfReference || target.IsIndirect || target is PdfStream || _numbers.ContainsKey(target))
-                {
-                    var (n, g) = Register(target);
-                    WriteAscii(output, $"{n.ToString(CultureInfo.InvariantCulture)} {g.ToString(CultureInfo.InvariantCulture)} R");
-                    return;
-                }
-                obj = target;
+                if (TryWriteAsReference(output, obj, out var direct)) return;
+                obj = direct;
             }
 
             switch (obj)
@@ -454,28 +444,61 @@ internal sealed partial class PdfDocument
                     WriteAscii(output, literal.Text);
                     break;
                 case PdfArray array:
-                    output.WriteByte((byte)'[');
-                    for (int i = 0; i < array.Count; i++)
-                    {
-                        if (i > 0) output.WriteByte((byte)' ');
-                        WriteObject(output, array.GetRaw(i), number, generation, encrypt, false, depth + 1);
-                    }
-                    output.WriteByte((byte)']');
+                    WriteArray(output, array, number, generation, encrypt, depth);
                     break;
                 case PdfDictionary dict:
-                    // A signature's /Contents is never encrypted: it signs the encrypted bytes.
-                    bool isSignature = dict.ContainsKey(PdfName.ByteRange) && dict.ContainsKey(PdfName.Contents);
-                    WriteAscii(output, "<<");
-                    foreach (var key in dict.Keys)
-                    {
-                        WriteName(output, key);
-                        output.WriteByte((byte)' ');
-                        bool encryptValue = encrypt && !(isSignature && key.Equals(PdfName.Contents));
-                        WriteObject(output, dict.GetRaw(key)!, number, generation, encryptValue, false, depth + 1);
-                    }
-                    WriteAscii(output, ">>");
+                    WriteDictionary(output, dict, number, generation, encrypt, depth);
                     break;
             }
+        }
+
+        /// <summary>
+        /// A nested value that is an indirect object (or a stream, which must be one) is written as
+        /// a reference to it. Otherwise nothing is written and <paramref name="direct"/> is the
+        /// value to write in place.
+        /// </summary>
+        private bool TryWriteAsReference(Stream output, PdfObject obj, out PdfObject direct)
+        {
+            var target = PdfReference.Deref(obj);
+            direct = target;
+            if (obj is PdfReference && target is PdfNull)
+            {
+                WriteAscii(output, "null");
+                return true;
+            }
+            if (obj is PdfReference || target.IsIndirect || target is PdfStream || _numbers.ContainsKey(target))
+            {
+                var (n, g) = Register(target);
+                WriteAscii(output, $"{n.ToString(CultureInfo.InvariantCulture)} {g.ToString(CultureInfo.InvariantCulture)} R");
+                return true;
+            }
+            return false;
+        }
+
+        private void WriteArray(Stream output, PdfArray array, int number, int generation, bool encrypt, int depth)
+        {
+            output.WriteByte((byte)'[');
+            for (int i = 0; i < array.Count; i++)
+            {
+                if (i > 0) output.WriteByte((byte)' ');
+                WriteObject(output, array.GetRaw(i), number, generation, encrypt, false, depth + 1);
+            }
+            output.WriteByte((byte)']');
+        }
+
+        private void WriteDictionary(Stream output, PdfDictionary dict, int number, int generation, bool encrypt, int depth)
+        {
+            // A signature's /Contents is never encrypted: it signs the encrypted bytes.
+            bool isSignature = dict.ContainsKey(PdfName.ByteRange) && dict.ContainsKey(PdfName.Contents);
+            WriteAscii(output, "<<");
+            foreach (var key in dict.Keys)
+            {
+                WriteName(output, key);
+                output.WriteByte((byte)' ');
+                bool encryptValue = encrypt && !(isSignature && key.Equals(PdfName.Contents));
+                WriteObject(output, dict.GetRaw(key)!, number, generation, encryptValue, false, depth + 1);
+            }
+            WriteAscii(output, ">>");
         }
 
         private static void WriteString(Stream output, byte[] bytes, bool hex)

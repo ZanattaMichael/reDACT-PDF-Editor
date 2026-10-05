@@ -177,7 +177,28 @@ internal sealed class PdfLexer
         }
         if (i == word.Length) return word.Length > 0 && i > 0 && Zero(out value);
 
-        bool sawDigit = false, sawDot = false;
+        if (!TryParseUnsigned(word, i, out double magnitude, out bool sawDot)) return false;
+        value = negative ? -magnitude : magnitude;
+        if (!double.IsFinite(value)) value = 0;
+        isInteger = !sawDot;
+        return true;
+
+        static bool Zero(out double v)
+        {
+            v = 0;
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Reads digits with at most one '.' from <paramref name="i"/> to the end of the word. False on
+    /// any other character, or when there is neither a digit nor a dot.
+    /// </summary>
+    private static bool TryParseUnsigned(string word, int i, out double magnitude, out bool sawDot)
+    {
+        magnitude = 0;
+        sawDot = false;
+        bool sawDigit = false;
         double intPart = 0, frac = 0, scale = 1;
         for (; i < word.Length; i++)
         {
@@ -205,17 +226,8 @@ internal sealed class PdfLexer
             }
         }
         if (!sawDigit && !sawDot) return false;
-        value = intPart + frac;
-        if (negative) value = -value;
-        if (!double.IsFinite(value)) value = 0;
-        isInteger = !sawDot;
+        magnitude = intPart + frac;
         return true;
-
-        static bool Zero(out double v)
-        {
-            v = 0;
-            return true;
-        }
     }
 
     private void ReadName()
@@ -304,38 +316,12 @@ internal sealed class PdfLexer
             else if (b == '\\')
             {
                 if (Position >= _end) break;
-                byte e = _data[Position++];
-                switch (e)
-                {
-                    case (byte)'n': bytes.Add(10); break;
-                    case (byte)'r': bytes.Add(13); break;
-                    case (byte)'t': bytes.Add(9); break;
-                    case (byte)'b': bytes.Add(8); break;
-                    case (byte)'f': bytes.Add(12); break;
-                    case (byte)'\r':
-                        if (Position < _end && _data[Position] == '\n') Position++;
-                        break; // line continuation
-                    case (byte)'\n':
-                        break;
-                    default:
-                        if (e >= '0' && e <= '7')
-                        {
-                            int v = e - '0';
-                            for (int k = 0; k < 2 && Position < _end && _data[Position] >= '0' && _data[Position] <= '7'; k++)
-                                v = v * 8 + (_data[Position++] - '0');
-                            bytes.Add((byte)v);
-                        }
-                        else
-                        {
-                            bytes.Add(e); // \( \) \\ and any other escaped byte stand for themselves
-                        }
-                        break;
-                }
+                ReadEscape(bytes);
             }
             else if (b == '\r')
             {
                 // An end-of-line in a string is read as a single LF, whatever the producer wrote.
-                if (Position < _end && _data[Position] == '\n') Position++;
+                SkipLineFeedAfterCr();
                 bytes.Add(10);
             }
             else
@@ -345,6 +331,43 @@ internal sealed class PdfLexer
         }
         TokenType = PdfTokenType.String;
         StringBytes = bytes.ToArray();
+    }
+
+    /// <summary>Reads the escape sequence after a backslash in a literal string.</summary>
+    private void ReadEscape(List<byte> bytes)
+    {
+        byte e = _data[Position++];
+        switch (e)
+        {
+            case (byte)'n': bytes.Add(10); break;
+            case (byte)'r': bytes.Add(13); break;
+            case (byte)'t': bytes.Add(9); break;
+            case (byte)'b': bytes.Add(8); break;
+            case (byte)'f': bytes.Add(12); break;
+            case (byte)'\r':
+                SkipLineFeedAfterCr();
+                break; // line continuation
+            case (byte)'\n':
+                break;
+            default:
+                // \( \) \\ and any other escaped byte stand for themselves
+                bytes.Add(e >= '0' && e <= '7' ? ReadOctalEscape(e) : e);
+                break;
+        }
+    }
+
+    /// <summary>An octal escape: <paramref name="first"/> and up to two more octal digits.</summary>
+    private byte ReadOctalEscape(byte first)
+    {
+        int v = first - '0';
+        for (int k = 0; k < 2 && Position < _end && _data[Position] >= '0' && _data[Position] <= '7'; k++)
+            v = v * 8 + (_data[Position++] - '0');
+        return (byte)v;
+    }
+
+    private void SkipLineFeedAfterCr()
+    {
+        if (Position < _end && _data[Position] == '\n') Position++;
     }
 
     public static bool IsHex(byte b) => b is >= (byte)'0' and <= (byte)'9' or >= (byte)'a' and <= (byte)'f' or >= (byte)'A' and <= (byte)'F';
@@ -457,11 +480,7 @@ internal sealed class PdfObjectParser
             if (!_lexer.Next()) return array; // unterminated at end of input: keep what was read
             if (_lexer.TokenType == PdfTokenType.ArrayEnd) return array;
             if (_lexer.TokenType == PdfTokenType.DictEnd) return array; // a mismatched close ends it too
-            if (_lexer.TokenType == PdfTokenType.Keyword && IsObjectBoundary(_lexer.Text))
-            {
-                _lexer.Position = _lexer.TokenStart;
-                return array;
-            }
+            if (RewindAtObjectBoundary()) return array;
             var item = ParseFromCurrent(depth + 1);
             if (item != null) array.Add(item);
         }
@@ -475,11 +494,7 @@ internal sealed class PdfObjectParser
             if (!_lexer.Next()) return dict;
             if (_lexer.TokenType == PdfTokenType.DictEnd) return dict;
             if (_lexer.TokenType == PdfTokenType.ArrayEnd) continue;
-            if (_lexer.TokenType == PdfTokenType.Keyword && IsObjectBoundary(_lexer.Text))
-            {
-                _lexer.Position = _lexer.TokenStart;
-                return dict;
-            }
+            if (RewindAtObjectBoundary()) return dict;
             if (_lexer.TokenType != PdfTokenType.Name)
             {
                 // A key that is not a name: skip the token (and anything it opens) and resync.
@@ -496,6 +511,17 @@ internal sealed class PdfObjectParser
             var value = ParseFromCurrent(depth + 1);
             dict.Put(key, value ?? PdfNull.Instance);
         }
+    }
+
+    /// <summary>
+    /// When the token just read is a keyword that can only appear between objects, rewinds to it
+    /// and returns true: the container being read ends there, unterminated.
+    /// </summary>
+    private bool RewindAtObjectBoundary()
+    {
+        if (_lexer.TokenType != PdfTokenType.Keyword || !IsObjectBoundary(_lexer.Text)) return false;
+        _lexer.Position = _lexer.TokenStart;
+        return true;
     }
 
     /// <summary>Keywords that can only appear between objects, so they end an unterminated container.</summary>
