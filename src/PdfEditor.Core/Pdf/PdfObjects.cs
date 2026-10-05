@@ -59,7 +59,7 @@ internal sealed class PdfNumber : PdfObject
     public PdfNumber(double value)
     {
         Value = double.IsFinite(value) ? value : 0;
-        IsInteger = Value == Math.Floor(Value) && Math.Abs(Value) < 1e15;
+        IsInteger = double.IsInteger(Value) && Math.Abs(Value) < 1e15;
     }
 
     public PdfNumber(long value)
@@ -90,7 +90,7 @@ internal sealed class PdfNumber : PdfObject
     public static string Format(double value)
     {
         if (!double.IsFinite(value)) return "0";
-        if (value == Math.Floor(value) && Math.Abs(value) < 1e15)
+        if (double.IsInteger(value) && Math.Abs(value) < 1e15)
             return ((long)value).ToString(CultureInfo.InvariantCulture);
         string s = value.ToString("0.######", CultureInfo.InvariantCulture);
         return s == "-0" ? "0" : s;

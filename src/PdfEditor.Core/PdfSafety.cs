@@ -73,7 +73,11 @@ public static class PdfSafety
 
     private static void CollectActionJs(PdfObject? obj, List<string> sources)
     {
-        if (obj is PdfArray arr) { foreach (var e in arr) CollectActionJs(e, sources); return; }
+        if (obj is PdfArray arr)
+        {
+            foreach (var e in arr) CollectActionJs(e, sources);
+            return;
+        }
         if (obj is not PdfDictionary a) return;
         if (a.GetAsName(PdfName.S)?.Equals(PdfName.JavaScript) == true)
         {

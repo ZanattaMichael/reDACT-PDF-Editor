@@ -49,7 +49,32 @@ internal sealed class PdfPage
             var parent = page.GetAsDictionary(PdfName.Parent);
             if (parent == null) continue;
             var value = GetInherited(parent, key);
-            if (value != null) page.Put(key, value.IsIndirect ? value : value);
+            if (value != null) page.Put(key, value.IsIndirect ? value : ShallowCopy(value));
+        }
+    }
+
+    /// <summary>
+    /// A direct array or dictionary pushed down from the page tree is copied: shared, an edit to
+    /// one page's box or resources would silently change every page that inherits it.
+    /// </summary>
+    private static PdfObject ShallowCopy(PdfObject value, int depth = 0)
+    {
+        switch (value)
+        {
+            case PdfArray array:
+                return new PdfArray(Enumerable.Range(0, array.Count).Select(array.GetRaw));
+            case PdfDictionary dict and not PdfStream:
+                // Resources hold their entries in direct category dictionaries (/Font, /XObject…),
+                // which edits add to, so those are copied too.
+                var copy = new PdfDictionary();
+                foreach (var key in dict.Keys)
+                {
+                    var raw = dict.GetRaw(key)!;
+                    copy.Put(key, depth == 0 && raw is PdfDictionary { IsIndirect: false } ? ShallowCopy(raw, 1) : raw);
+                }
+                return copy;
+            default:
+                return value;
         }
     }
 
