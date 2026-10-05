@@ -48,7 +48,7 @@ public static class FlattenTool
         foreach (var page in doc.Pages)
         {
             // Snapshot: removing an annotation mutates the page's annotation list.
-            var annotations = page.Annotations.ToArray();
+            var annotations = page.GetAnnotations().ToArray();
             ContentBuilder? canvas = null;
             foreach (var annot in annotations)
             {

@@ -34,7 +34,7 @@ public class FlattenToolTests
 
     private static int FormFieldCount(byte[] pdf) => AcroForm.AllNodes(PdfDocument.Open(pdf)).Count;
 
-    private static int AnnotationCount(byte[] pdf) => PdfDocument.Open(pdf).GetPage(1).Annotations.Count;
+    private static int AnnotationCount(byte[] pdf) => PdfDocument.Open(pdf).GetPage(1).GetAnnotations().Count;
 
     [Fact]
     public void Flatten_Forms_MakesFieldsStatic()

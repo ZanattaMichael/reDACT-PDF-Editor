@@ -97,7 +97,7 @@ public static class Redactor
 
     private static void RemoveAnnotationsIn(PdfPage page, IList<PdfRect> regions)
     {
-        foreach (var annotation in page.Annotations.ToArray())
+        foreach (var annotation in page.GetAnnotations().ToArray())
         {
             var rect = PdfRect.FromArray(annotation.GetAsArray(PdfName.Rect));
             if (rect is { } r && regions.Any(region => region.Intersects(r)))

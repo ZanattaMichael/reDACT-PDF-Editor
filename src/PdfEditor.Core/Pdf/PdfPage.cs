@@ -112,7 +112,7 @@ internal sealed class PdfPage
     }
 
     /// <summary>The page's content streams, in drawing order.</summary>
-    public IReadOnlyList<PdfStream> ContentStreams => Dictionary.Get(PdfName.Contents) switch
+    public IReadOnlyList<PdfStream> GetContentStreams() => Dictionary.Get(PdfName.Contents) switch
     {
         PdfStream single => new[] { single },
         PdfArray array => array.OfType<PdfStream>().ToArray(),
@@ -125,7 +125,7 @@ internal sealed class PdfPage
     /// </summary>
     public byte[] GetContentBytes()
     {
-        var streams = ContentStreams;
+        var streams = GetContentStreams();
         if (streams.Count == 1) return streams[0].GetDecodedBytes();
         using var output = new MemoryStream();
         foreach (var stream in streams)
@@ -171,7 +171,7 @@ internal sealed class PdfPage
     }
 
     /// <summary>The page's annotation dictionaries.</summary>
-    public IReadOnlyList<PdfDictionary> Annotations =>
+    public IReadOnlyList<PdfDictionary> GetAnnotations() =>
         Dictionary.GetAsArray(PdfName.Annots)?.OfType<PdfDictionary>().ToList() ?? new List<PdfDictionary>();
 
     /// <summary>Adds <paramref name="annotation"/> to the page (as an indirect object, with /P set).</summary>

@@ -11,7 +11,7 @@ public static class UrlTools
         var doc = PdfIo.OpenReadOnly(pdf, password);
         var links = new List<PdfLink>();
         for (int i = 1; i <= doc.PageCount; i++)
-            foreach (var annot in doc.GetPage(i).Annotations)
+            foreach (var annot in doc.GetPage(i).GetAnnotations())
             {
                 var rect = PdfRect.FromArray(annot.GetAsArray(PdfName.Rect));
                 CollectUri(annot.Get(PdfName.A), i, rect, links);
@@ -29,7 +29,7 @@ public static class UrlTools
         var doc = PdfIo.OpenReadOnly(pdf, password);
         var links = new List<PdfLink>();
         for (int i = 1; i <= doc.PageCount; i++)
-            foreach (var annot in doc.GetPage(i).Annotations)
+            foreach (var annot in doc.GetPage(i).GetAnnotations())
             {
                 if (!PdfName.Link.Equals(annot.GetAsName(PdfName.Subtype))) continue;
                 var ad = annot;

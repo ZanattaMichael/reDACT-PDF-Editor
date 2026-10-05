@@ -116,7 +116,7 @@ public class RedactorTests
 
         var result = Redactor.Redact(pdf, new[] { new RectRegion(1, 60, 640, 200, 40) });
 
-        Assert.Empty(PdfEditor.Core.Pdf.PdfDocument.Open(result.Pdf).GetPage(1).Annotations);
+        Assert.Empty(PdfEditor.Core.Pdf.PdfDocument.Open(result.Pdf).GetPage(1).GetAnnotations());
     }
 
     [Fact]

@@ -50,7 +50,7 @@ public class SignerTests
 
         // The visible appearance is a widget annotation on page 1 at the requested rect.
         var doc = PdfDocument.Open(signed);
-        var widget = Assert.Single(doc.GetPage(1).Annotations);
+        var widget = Assert.Single(doc.GetPage(1).GetAnnotations());
         var rect = PdfRect.FromArray(widget.GetAsArray(PdfName.Rect))!.Value;
         Assert.Equal(350, rect.Left, 0.5);
         Assert.Equal(80, rect.Bottom, 0.5);
@@ -109,7 +109,7 @@ public class SignerTests
         // content stream, so it must be found by walking the annotation's /AP /N resources
         // (possibly through nested form XObjects) rather than via TestPdfAssert.CountImages.
         var doc = PdfDocument.Open(signed);
-        var widget = Assert.Single(doc.GetPage(1).Annotations);
+        var widget = Assert.Single(doc.GetPage(1).GetAnnotations());
         var appearance = widget.GetAsDictionary(PdfName.AP)?.GetAsStream(PdfName.N);
         Assert.NotNull(appearance);
         var resources = appearance!.GetAsDictionary(PdfName.Resources);

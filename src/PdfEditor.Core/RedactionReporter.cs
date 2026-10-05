@@ -39,7 +39,7 @@ public static class RedactionReporter
                 .Select(s => new PdfRect(s.X, s.Y, s.Width, s.Height)).ToList();
             var pageImages = PageImages(page);
             var imageRects = pageImages.Select(i => i.Rect).ToList();
-            var annots = page.Annotations
+            var annots = page.GetAnnotations()
                 .Select(a => PdfRect.FromArray(a.GetAsArray(PdfName.Rect))).Where(r => r != null).Select(r => r!.Value).ToList();
 
             foreach (var r in rects)

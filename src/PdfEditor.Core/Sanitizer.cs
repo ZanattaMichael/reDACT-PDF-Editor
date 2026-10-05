@@ -97,7 +97,7 @@ public static class Sanitizer
         int count = NameTreeSize(catalog.GetAsDictionary(PdfName.Names)?.GetAsDictionary(PdfName.EmbeddedFiles));
         count += catalog.GetAsArray(PdfName.AF)?.Count ?? 0;
         for (int i = 1; i <= doc.PageCount; i++)
-            foreach (var annot in doc.GetPage(i).Annotations)
+            foreach (var annot in doc.GetPage(i).GetAnnotations())
                 if (PdfName.FileAttachment.Equals(annot.GetAsName(PdfName.Subtype))) count++;
         return count;
     }
@@ -106,7 +106,7 @@ public static class Sanitizer
     {
         int count = 0;
         for (int i = 1; i <= doc.PageCount; i++)
-            foreach (var annot in doc.GetPage(i).Annotations)
+            foreach (var annot in doc.GetPage(i).GetAnnotations())
                 if (!KeepAnnotations.Any(k => k.Equals(annot.GetAsName(PdfName.Subtype)))) count++;
         return count;
     }
@@ -157,7 +157,7 @@ public static class Sanitizer
         for (int i = 1; i <= doc.PageCount; i++)
         {
             var page = doc.GetPage(i);
-            foreach (var annot in page.Annotations.ToList())
+            foreach (var annot in page.GetAnnotations().ToList())
                 if (PdfName.FileAttachment.Equals(annot.GetAsName(PdfName.Subtype)))
                     page.RemoveAnnotation(annot);
         }
@@ -168,7 +168,7 @@ public static class Sanitizer
         for (int i = 1; i <= doc.PageCount; i++)
         {
             var page = doc.GetPage(i);
-            foreach (var annot in page.Annotations.ToList())
+            foreach (var annot in page.GetAnnotations().ToList())
                 if (!KeepAnnotations.Any(k => k.Equals(annot.GetAsName(PdfName.Subtype))))
                     page.RemoveAnnotation(annot);
         }

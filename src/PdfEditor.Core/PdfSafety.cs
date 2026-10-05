@@ -33,7 +33,7 @@ public static class PdfSafety
         {
             var page = doc.GetPage(i);
             ClassifyAA(page.Dictionary.GetAsDictionary(PdfName.AA), ref js, ref url, samples);
-            foreach (var annot in page.Annotations)
+            foreach (var annot in page.GetAnnotations())
             {
                 var ad = annot;
                 Classify(ad.Get(PdfName.A), ref js, ref url, samples);
@@ -61,7 +61,7 @@ public static class PdfSafety
         {
             var page = doc.GetPage(i);
             CollectAaJs(page.Dictionary.GetAsDictionary(PdfName.AA), sources);
-            foreach (var annot in page.Annotations)
+            foreach (var annot in page.GetAnnotations())
             {
                 var ad = annot;
                 CollectActionJs(ad.Get(PdfName.A), sources);
@@ -141,7 +141,7 @@ public static class PdfSafety
         {
             var page = doc.GetPage(i);
             if (javaScript) page.Dictionary.Remove(PdfName.AA);
-            foreach (var annot in page.Annotations)
+            foreach (var annot in page.GetAnnotations())
             {
                 var ad = annot;
                 RemoveActionIf(ad, PdfName.A, javaScript, urls);

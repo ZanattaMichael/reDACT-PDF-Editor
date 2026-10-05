@@ -132,7 +132,7 @@ internal static class PdfFilters
         }
 
         /// <summary>Thrown internally when the input runs out; turns into an incomplete result.</summary>
-        private sealed class EndOfInputException : Exception { }
+        public sealed class EndOfInputException : Exception { }
 
         public static Result Run(byte[] input, int max)
         {
@@ -167,7 +167,7 @@ internal static class PdfFilters
             }
         }
 
-        private sealed class CorruptDataException : Exception
+        public sealed class CorruptDataException : Exception
         {
             public CorruptDataException(string message) : base(message) { }
         }
