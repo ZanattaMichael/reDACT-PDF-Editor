@@ -132,7 +132,7 @@ internal static class PdfFilters
         }
 
         /// <summary>Thrown internally when the input runs out; turns into an incomplete result.</summary>
-        private sealed class EndOfInput : Exception { }
+        private sealed class EndOfInputException : Exception { }
 
         public static Result Run(byte[] input, int max)
         {
@@ -157,19 +157,19 @@ internal static class PdfFilters
                 } while (!final);
                 return new Result(inflater.Output(), true, null);
             }
-            catch (EndOfInput)
+            catch (EndOfInputException)
             {
                 return new Result(inflater.Output(), false, null);
             }
-            catch (CorruptData e)
+            catch (CorruptDataException e)
             {
                 return inflater.Fail(e.Message);
             }
         }
 
-        private sealed class CorruptData : Exception
+        private sealed class CorruptDataException : Exception
         {
-            public CorruptData(string message) : base(message) { }
+            public CorruptDataException(string message) : base(message) { }
         }
 
         private Result Fail(string message) => new(Output(), false, message);
@@ -180,7 +180,7 @@ internal static class PdfFilters
         {
             while (_bitCount < need)
             {
-                if (_pos >= _in.Length) throw new EndOfInput();
+                if (_pos >= _in.Length) throw new EndOfInputException();
                 _bitBuf |= (uint)_in[_pos++] << _bitCount;
                 _bitCount += 8;
             }
@@ -200,7 +200,7 @@ internal static class PdfFilters
         {
             long wanted = (long)_outLen + extra;
             if (wanted > _max)
-                throw new CorruptData($"The Flate data expands past {_max / (1024 * 1024)} MiB: it is a decompression bomb, not page content.");
+                throw new CorruptDataException($"The Flate data expands past {_max / (1024 * 1024)} MiB: it is a decompression bomb, not page content.");
             long size = Math.Max(wanted, Math.Min((long)_max, (long)_out.Length * 2));
             Array.Resize(ref _out, (int)size);
         }
@@ -212,11 +212,11 @@ internal static class PdfFilters
             _pos -= _bitCount >> 3;
             _bitBuf = 0;
             _bitCount = 0;
-            if (_pos + 4 > _in.Length) throw new EndOfInput();
+            if (_pos + 4 > _in.Length) throw new EndOfInputException();
             int len = _in[_pos] | _in[_pos + 1] << 8;
             int nlen = _in[_pos + 2] | _in[_pos + 3] << 8;
             _pos += 4;
-            if (len != (~nlen & 0xFFFF)) throw new CorruptData("A stored Flate block's length check does not match: the data is corrupt.");
+            if (len != (~nlen & 0xFFFF)) throw new CorruptDataException("A stored Flate block's length check does not match: the data is corrupt.");
             if (_pos + len > _in.Length)
             {
                 int available = _in.Length - _pos;
@@ -224,7 +224,7 @@ internal static class PdfFilters
                 Array.Copy(_in, _pos, _out, _outLen, available);
                 _outLen += available;
                 _pos = _in.Length;
-                throw new EndOfInput();
+                throw new EndOfInputException();
             }
             if (_outLen + len > _out.Length) Grow(len);
             Array.Copy(_in, _pos, _out, _outLen, len);
@@ -236,7 +236,7 @@ internal static class PdfFilters
         {
             while (true)
             {
-                int symbol = Decode(lit);
+                int symbol = DecodeSymbol(lit);
                 if (symbol < 256)
                 {
                     Put((byte)symbol);
@@ -244,12 +244,12 @@ internal static class PdfFilters
                 }
                 if (symbol == 256) return;
                 symbol -= 257;
-                if (symbol >= 29) throw new CorruptData("The Flate data contains an invalid length code: it is corrupt.");
+                if (symbol >= 29) throw new CorruptDataException("The Flate data contains an invalid length code: it is corrupt.");
                 int length = LengthBase[symbol] + Bits(LengthExtra[symbol]);
-                int ds = Decode(dist);
-                if (ds >= 30) throw new CorruptData("The Flate data contains an invalid distance code: it is corrupt.");
+                int ds = DecodeSymbol(dist);
+                if (ds >= 30) throw new CorruptDataException("The Flate data contains an invalid distance code: it is corrupt.");
                 int distance = DistBase[ds] + Bits(DistExtra[ds]);
-                if (distance > _outLen) throw new CorruptData("The Flate data refers back past its own start: it is corrupt.");
+                if (distance > _outLen) throw new CorruptDataException("The Flate data refers back past its own start: it is corrupt.");
                 if (_outLen + length > _out.Length) Grow(length);
                 int from = _outLen - distance;
                 for (int i = 0; i < length; i++) _out[_outLen++] = _out[from + i];
@@ -261,16 +261,16 @@ internal static class PdfFilters
             int nlen = Bits(5) + 257;
             int ndist = Bits(5) + 1;
             int ncode = Bits(4) + 4;
-            if (nlen > 286 || ndist > 30) throw new CorruptData("The Flate data declares too many codes: it is corrupt.");
+            if (nlen > 286 || ndist > 30) throw new CorruptDataException("The Flate data declares too many codes: it is corrupt.");
             var lengths = new int[320];
             for (int i = 0; i < ncode; i++) lengths[CodeLengthOrder[i]] = Bits(3);
             var lencode = Huffman.Build(lengths, 0, 19)
-                ?? throw new CorruptData("The Flate data's code-length table is invalid: it is corrupt.");
+                ?? throw new CorruptDataException("The Flate data's code-length table is invalid: it is corrupt.");
 
             int index = 0;
             while (index < nlen + ndist)
             {
-                int symbol = Decode(lencode);
+                int symbol = DecodeSymbol(lencode);
                 if (symbol < 16)
                 {
                     lengths[index++] = symbol;
@@ -279,23 +279,23 @@ internal static class PdfFilters
                 int repeat, value = 0;
                 if (symbol == 16)
                 {
-                    if (index == 0) throw new CorruptData("The Flate data repeats a code length before any was given: it is corrupt.");
+                    if (index == 0) throw new CorruptDataException("The Flate data repeats a code length before any was given: it is corrupt.");
                     value = lengths[index - 1];
                     repeat = 3 + Bits(2);
                 }
                 else if (symbol == 17) repeat = 3 + Bits(3);
                 else repeat = 11 + Bits(7);
-                if (index + repeat > nlen + ndist) throw new CorruptData("The Flate data's code lengths overrun their table: it is corrupt.");
+                if (index + repeat > nlen + ndist) throw new CorruptDataException("The Flate data's code lengths overrun their table: it is corrupt.");
                 while (repeat-- > 0) lengths[index++] = value;
             }
-            if (lengths[256] == 0) throw new CorruptData("The Flate data has no end-of-block code: it is corrupt.");
+            if (lengths[256] == 0) throw new CorruptDataException("The Flate data has no end-of-block code: it is corrupt.");
 
-            var lit = Huffman.Build(lengths, 0, nlen) ?? throw new CorruptData("The Flate data's literal table is invalid: it is corrupt.");
-            var dist = Huffman.Build(lengths, nlen, ndist) ?? throw new CorruptData("The Flate data's distance table is invalid: it is corrupt.");
+            var lit = Huffman.Build(lengths, 0, nlen) ?? throw new CorruptDataException("The Flate data's literal table is invalid: it is corrupt.");
+            var dist = Huffman.Build(lengths, nlen, ndist) ?? throw new CorruptDataException("The Flate data's distance table is invalid: it is corrupt.");
             Codes(lit, dist);
         }
 
-        private int Decode(Huffman h)
+        private int DecodeSymbol(Huffman h)
         {
             // Fast path: peek FastBits bits and look the code up directly.
             while (_bitCount < Huffman.FastBits && _pos < _in.Length)
@@ -326,7 +326,7 @@ internal static class PdfFilters
                 first <<= 1;
                 code <<= 1;
             }
-            throw new CorruptData("The Flate data contains a code that is not in its table: it is corrupt.");
+            throw new CorruptDataException("The Flate data contains a code that is not in its table: it is corrupt.");
         }
 
         private static Huffman BuildFixedLit()

@@ -443,12 +443,12 @@ public static class TextTools
         private readonly List<TextSpan> _spans;
         public SpanListener(List<TextSpan> spans) => _spans = spans;
 
-        public void OnText(TextRenderInfo t)
+        public void OnText(TextRenderInfo info)
         {
-            string text = t.Text;
+            string text = info.Text;
             if (string.IsNullOrWhiteSpace(text)) return;
-            var asc = t.AscentLine;
-            var desc = t.DescentLine;
+            var asc = info.AscentLine;
+            var desc = info.DescentLine;
             float x0 = (float)desc.Start.X, x1 = (float)desc.End.X;
             float yBottom = (float)desc.Start.Y, yTop = (float)asc.Start.Y;
             float minX = Math.Min(x0, x1), maxX = Math.Max(x0, x1);
@@ -508,9 +508,9 @@ public static class TextTools
         private readonly List<Chunk> _chunks;
         public ChunkListener(List<Chunk> chunks) => _chunks = chunks;
 
-        public void OnText(TextRenderInfo t)
+        public void OnText(TextRenderInfo info)
         {
-            foreach (var single in t.Glyphs)
+            foreach (var single in info.Glyphs)
             {
                 var asc = single.AscentLine;
                 var desc = single.DescentLine;
@@ -523,10 +523,10 @@ public static class TextTools
                 // Rendering mode 3 draws nothing. It is how a searchable scan carries its OCR
                 // layer: the words you see are pixels in the page image, and this text only exists
                 // to be selected and searched.
-                bool invisible = t.RenderMode == 3;
+                bool invisible = info.RenderMode == 3;
                 _chunks.Add(new Chunk(single.Text,
                     new PdfRect(minX, minY, maxX - minX, boxHeight), boxHeight,
-                    EmSizeFromBoxHeight(boxHeight, t.Font.Ascent, t.Font.Descent), t.FontName, invisible));
+                    EmSizeFromBoxHeight(boxHeight, info.Font.Ascent, info.Font.Descent), info.FontName, invisible));
             }
         }
     }
@@ -548,7 +548,11 @@ public static class TextTools
         {
             var line = lines.FirstOrDefault(l =>
                 Math.Abs(l[0].BBox.Bottom - chunk.BBox.Bottom) < l[0].FontHeight * 0.6f);
-            if (line == null) lines.Add(line = new List<Chunk>());
+            if (line == null)
+            {
+                line = new List<Chunk>();
+                lines.Add(line);
+            }
             line.Add(chunk);
         }
         var sb = new StringBuilder();

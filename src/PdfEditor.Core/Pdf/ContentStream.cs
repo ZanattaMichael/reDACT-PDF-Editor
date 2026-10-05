@@ -466,12 +466,10 @@ internal static class PdfResources
         }
         foreach (var key in dict.Keys)
             if (ReferenceEquals(dict.Get(key), value)) return key;
-        for (int i = 1; ; i++)
-        {
-            var name = PdfName.Of(prefix + i.ToString(CultureInfo.InvariantCulture));
-            if (dict.ContainsKey(name)) continue;
-            dict.Put(name, value);
-            return name;
-        }
+        int i = 1;
+        while (dict.ContainsKey(PdfName.Of(prefix + i.ToString(CultureInfo.InvariantCulture)))) i++;
+        var name = PdfName.Of(prefix + i.ToString(CultureInfo.InvariantCulture));
+        dict.Put(name, value);
+        return name;
     }
 }

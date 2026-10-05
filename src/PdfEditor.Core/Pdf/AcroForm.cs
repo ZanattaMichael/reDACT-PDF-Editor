@@ -220,7 +220,7 @@ internal static class AcroForm
         var fonts = new PdfDictionary();
         fonts.Put(fontName, form.GetAsDictionary(PdfName.DR)?.GetAsDictionary(PdfName.Font)?.Get(fontName) ?? font.Dictionary!);
         resources.Put(PdfName.Font, fonts);
-        SetNormalAppearance(doc, widget, Appearance(doc, w, h, canvas.ToArray(), resources));
+        SetNormalAppearance(widget, Appearance(doc, w, h, canvas.ToArray(), resources));
     }
 
     private static float AutoSize(PdfFont font, string text, float w, float h)
@@ -306,7 +306,7 @@ internal static class AcroForm
         return doc.MakeIndirect(stream);
     }
 
-    private static void SetNormalAppearance(PdfDocument doc, PdfDictionary widget, PdfObject normal)
+    private static void SetNormalAppearance(PdfDictionary widget, PdfObject normal)
     {
         var ap = new PdfDictionary();
         ap.Put(PdfName.N, normal);
@@ -412,7 +412,7 @@ internal static class AcroForm
         var fonts = new PdfDictionary();
         fonts.Put(PdfName.Of(DefaultFontName), fontDict);
         resources.Put(PdfName.Font, fonts);
-        SetNormalAppearance(doc, widget, Appearance(doc, w, h, canvas.ToArray(), resources));
+        SetNormalAppearance(widget, Appearance(doc, w, h, canvas.ToArray(), resources));
     }
 
     // ------------------------------------------------------------------ flattening

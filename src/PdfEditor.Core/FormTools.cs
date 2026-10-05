@@ -187,11 +187,9 @@ public static class FormTools
         var existing = AcroForm.AllNodes(doc).Select(n => n.Name).ToHashSet(StringComparer.Ordinal);
         string baseName = string.IsNullOrWhiteSpace(requested) ? prefix : requested.Trim();
         if (!existing.Contains(baseName)) return baseName;
-        for (int i = 2; ; i++)
-        {
-            string candidate = $"{baseName}_{i}";
-            if (!existing.Contains(candidate)) return candidate;
-        }
+        int i = 2;
+        while (existing.Contains($"{baseName}_{i}")) i++;
+        return $"{baseName}_{i}";
     }
 
     /// <summary>Lists every fillable field with its type, current value, and allowed options.</summary>

@@ -544,7 +544,6 @@ internal sealed partial class PdfDocument
         if (obj is PdfDictionary dict && lexer.Next() && lexer.TokenType == PdfTokenType.Keyword && lexer.Text == "stream")
         {
             obj = ReadStreamBody(dict, lexer, scanning);
-            afterObject = lexer.Position;
         }
         else
         {

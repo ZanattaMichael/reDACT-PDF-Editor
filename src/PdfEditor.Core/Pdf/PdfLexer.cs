@@ -171,7 +171,7 @@ internal sealed class PdfLexer
             negative |= word[i] == '-';
             i++;
         }
-        if (i == word.Length) return word.Length > 0 && i > 0 ? Zero(out value) : false;
+        if (i == word.Length) return word.Length > 0 && i > 0 && Zero(out value);
 
         bool sawDigit = false, sawDot = false;
         double intPart = 0, frac = 0, scale = 1;

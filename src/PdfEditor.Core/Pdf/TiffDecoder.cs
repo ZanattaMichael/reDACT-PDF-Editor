@@ -14,7 +14,7 @@ internal static class TiffDecoder
 {
     private sealed class Ifd
     {
-        public int Width, Height, Compression = 1, Photometric = 1, SamplesPerPixel = 1, RowsPerStrip = int.MaxValue;
+        public int Width, Height, Compression = 1, Photometric = 1, SamplesPerPixel = 1;
         public int Predictor = 1, PlanarConfig = 1, FillOrder = 1, T4Options;
         public int[] BitsPerSample = { 1 };
         public long[] StripOffsets = Array.Empty<long>();
@@ -65,7 +65,6 @@ internal static class TiffDecoder
                 case 266: result.FillOrder = (int)Values()[0]; break;
                 case 273: result.StripOffsets = Values(); break;
                 case 277: result.SamplesPerPixel = (int)Values()[0]; break;
-                case 278: result.RowsPerStrip = (int)Math.Min(Values()[0], int.MaxValue); break;
                 case 279: result.StripByteCounts = Values(); break;
                 case 284: result.PlanarConfig = (int)Values()[0]; break;
                 case 292: result.T4Options = (int)Values()[0]; break;
