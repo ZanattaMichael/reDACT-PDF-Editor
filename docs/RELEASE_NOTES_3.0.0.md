@@ -26,6 +26,12 @@ listed under *What behaves differently* below.
 
 These are deliberate, and each one is pinned by a test or a golden recording.
 
+- **Redaction no longer leaves an unredacted copy of a form or image in the file.** Text inside a
+  form XObject (a stamp, a template, a group of layered content) is redacted on an edited copy,
+  which the page then draws. 2.x left the original listed in the page's resources, so it was saved
+  too: nothing drew it, but anyone who looked inside the file could read it. An image a redaction
+  dropped stayed behind the same way. The page now stops listing both, so neither is saved unless
+  another page still uses it.
 - **Content that cannot be decoded is refused, not treated as empty.** If a page's content stream
   is corrupt (for example, it claims to be compressed but isn't), redacting or editing that page
   now stops with *"This PDF could not be read: … is malformed or corrupt"*. iText read such a
