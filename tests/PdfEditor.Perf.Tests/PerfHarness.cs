@@ -1,10 +1,7 @@
 using System.Diagnostics;
 using System.Text;
-using iText.IO.Font.Constants;
-using iText.Kernel.Font;
-using iText.Kernel.Geom;
-using iText.Kernel.Pdf;
-using iText.Kernel.Pdf.Canvas;
+using PdfEditor.Core.Pdf;
+using PdfEditor.Core.Pdf.Fonts;
 using Xunit;
 
 namespace PdfEditor.Perf.Tests;
@@ -48,32 +45,32 @@ internal static class PerfHarness
     /// <summary>Builds a <paramref name="pages"/>-page PDF with ~<paramref name="wordsPerPage"/> words each.</summary>
     public static byte[] Doc(int pages, int wordsPerPage = 14)
     {
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfWriter(output)))
+        var doc = PdfDocument.CreateNew();
+        var font = PdfFont.Standard(StandardFonts.Helvetica);
+        var fontRef = doc.MakeIndirect(font.Dictionary!);
+        for (int p = 1; p <= pages; p++)
         {
-            var font = PdfFontFactory.CreateFont(StandardFonts.HELVETICA);
-            for (int p = 1; p <= pages; p++)
+            var page = doc.AddNewPage(595, 842);
+            var name = PdfResources.Add(page.GetOrCreateResources(), PdfName.Font, "F", fontRef);
+            var canvas = new ContentBuilder();
+            canvas.BeginText().Font(name, 11).Leading(13).MoveText(56, 780);
+            var line = new StringBuilder();
+            int wordsOnLine = 0;
+            for (int w = 0; w < wordsPerPage; w++)
             {
-                var page = doc.AddNewPage(new PageSize(595, 842));
-                var canvas = new PdfCanvas(page);
-                canvas.BeginText().SetFontAndSize(font, 11).SetLeading(13).MoveText(56, 780);
-                var line = new StringBuilder();
-                int wordsOnLine = 0;
-                for (int w = 0; w < wordsPerPage; w++)
+                line.Append('w').Append(p).Append('_').Append(w).Append(' ');
+                if (++wordsOnLine == 12)
                 {
-                    line.Append('w').Append(p).Append('_').Append(w).Append(' ');
-                    if (++wordsOnLine == 12)
-                    {
-                        canvas.ShowText(line.ToString()).NewlineText();
-                        line.Clear();
-                        wordsOnLine = 0;
-                    }
+                    canvas.ShowText(font.Encode(line.ToString())).Raw("T*\n");
+                    line.Clear();
+                    wordsOnLine = 0;
                 }
-                if (line.Length > 0) canvas.ShowText(line.ToString());
-                canvas.EndText();
             }
+            if (line.Length > 0) canvas.ShowText(font.Encode(line.ToString()));
+            canvas.EndText();
+            page.AppendContent(canvas.ToArray());
         }
-        return output.ToArray();
+        return doc.Save();
     }
 
     /// <summary>Runs <paramref name="op"/> once to warm up, then returns the fastest of N timed runs

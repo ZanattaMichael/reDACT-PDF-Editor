@@ -1,7 +1,5 @@
-using iText.Kernel.Colors;
-using iText.Kernel.Font;
-using iText.Kernel.Geom;
-using iText.Kernel.Pdf;
+using PdfEditor.Core.Pdf;
+using PdfEditor.Core.Pdf.Fonts;
 
 namespace PdfEditor.Core;
 
@@ -13,7 +11,7 @@ namespace PdfEditor.Core;
 /// </summary>
 public static class BatesTool
 {
-    private static readonly DeviceRgb DefaultColour = new(0, 0, 0);
+    private static readonly PdfColor DefaultColour = PdfColor.Black;
 
     /// <summary>Where on the page the number is stamped.</summary>
     public enum Corner
@@ -38,41 +36,41 @@ public static class BatesTool
         float fontSize = Math.Clamp(o.FontSize, 4f, 72f);
         string prefix = o.Prefix ?? "";
         string suffix = o.Suffix ?? "";
-        var colour = (TextTools.ParseColor(o.ColorHex) as DeviceRgb) ?? DefaultColour;
-        var font = PdfFontFactory.CreateFont(iText.IO.Font.Constants.StandardFonts.HELVETICA);
+        var colour = TextTools.ParseColor(o.ColorHex) ?? DefaultColour;
+        var font = PdfFont.Standard(StandardFonts.Helvetica);
 
         string? firstLabel = null, lastLabel = null;
-        using var output = new MemoryStream();
-        using (var doc = PdfIo.Open(pdf, output, password))
+        var doc = PdfIo.Open(pdf, password);
+        var fontDict = doc.MakeIndirect(font.Dictionary!);
+        var target = NormalizePages(o.Pages, doc.PageCount);
+        for (int i = 0; i < target.Count; i++)
         {
-            var target = NormalizePages(o.Pages, doc.GetNumberOfPages());
-            for (int i = 0; i < target.Count; i++)
-            {
-                int pageNum = target[i];
-                // Invariant culture: a Bates number is an identifier, not locale-formatted text.
-                string number = (o.Start + i).ToString(System.Globalization.CultureInfo.InvariantCulture);
-                string label = prefix + number.PadLeft(digits, '0') + suffix;
-                firstLabel ??= label;
-                lastLabel = label;
+            int pageNum = target[i];
+            // Invariant culture: a Bates number is an identifier, not locale-formatted text.
+            string number = (o.Start + i).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            string label = prefix + number.PadLeft(digits, '0') + suffix;
+            firstLabel ??= label;
+            lastLabel = label;
 
-                var page = doc.GetPage(pageNum);
-                var box = page.GetPageSize();
-                float textWidth = font.GetWidth(label, fontSize);
-                var (x, y) = Anchor(o.Position, box, textWidth, fontSize);
+            var page = doc.GetPage(pageNum);
+            var box = page.MediaBox;
+            float textWidth = (float)font.MeasureText(label, fontSize);
+            var (x, y) = Anchor(o.Position, box, textWidth, fontSize);
 
-                var canvas = PdfContentGuard.InDefaultUserSpace(page, doc);
-                canvas.BeginText().SetFontAndSize(font, fontSize).SetFillColor(colour)
-                    .MoveText(x, y).ShowText(label).EndText();
-            }
+            var fName = PdfResources.Add(page.GetOrCreateResources(), PdfName.Font, "F", fontDict);
+            var canvas = new ContentBuilder()
+                .BeginText().Font(fName, fontSize).FillColor(colour)
+                .MoveText(x, y).ShowText(font.Encode(label)).EndText();
+            PdfContentGuard.DrawInDefaultUserSpace(page, canvas.ToArray());
         }
-        return new BatesResult(output.ToArray(), firstLabel ?? "", lastLabel ?? "");
+        return new BatesResult(PdfIo.Save(doc), firstLabel ?? "", lastLabel ?? "");
     }
 
     /// <summary>Baseline start point for the label in the requested corner, inset by the margin.</summary>
-    private static (float X, float Y) Anchor(Corner position, Rectangle box, float textWidth, float fontSize)
+    private static (float X, float Y) Anchor(Corner position, PdfRect box, float textWidth, float fontSize)
     {
-        float left = box.GetLeft(), right = box.GetRight();
-        float bottom = box.GetBottom(), top = box.GetTop();
+        float left = box.Left, right = box.Right;
+        float bottom = box.Bottom, top = box.Top;
         float x = position switch
         {
             Corner.BottomLeft or Corner.TopLeft => left + Margin,

@@ -25,7 +25,7 @@ page 1: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == redact ==
-bytes: ~3328
+bytes: ~3072
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -66,7 +66,7 @@ page 1: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == replace-region-text ==
-bytes: ~3584
+bytes: ~3328
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -108,7 +108,7 @@ page 1: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == rotate-90 ==
-bytes: ~2048
+bytes: ~1792
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -132,7 +132,7 @@ page 1: media=[0 0 400 600] crop=none rotate=90 annots=0 group=none
 acroform: none
 validation: clean
 == merge-with-self ==
-bytes: ~3584
+bytes: ~3072
 pdf-version: PDF-1.7
 pages: 2
 encrypted: no
@@ -171,7 +171,7 @@ page 2: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == sanitize ==
-bytes: ~2048
+bytes: ~1792
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -195,7 +195,7 @@ page 1: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == add-text-field ==
-bytes: ~2816
+bytes: ~2560
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -220,7 +220,7 @@ acroform: needAppearances=none fields=1
   field: name=(golden.added) type=Tx value=(filled) hasAppearance=yes
 validation: clean
 == sign-image ==
-bytes: ~2560
+bytes: ~2304
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -241,6 +241,6 @@ page 1: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
       gs GS3: BM=/Darken ca=0.35
       xobject Fm3: subtype=Form bbox=[0 0 120 100] matrix=none group=Transparency(cs=/DeviceGray I=true K=false)
         ops: fx1 gx1 rex1
-  xobject Im1: subtype=Image size=24x12 cs=/DeviceRGB bpc=8 filter=/FlateDecode smask=yes mask=no
+  xobject Im1: subtype=Image size=24x12 cs=/DeviceRGB bpc=8 filter=/FlateDecode smask=no mask=no
 acroform: none
 validation: clean

@@ -68,7 +68,7 @@ public class TextToolsTests
     /// <summary>
     /// Replacement text longer than what it replaces has to survive intact. The region handed to the
     /// stamper is the measured bounding box of the words being replaced, and laying the paragraph out
-    /// inside it meant iText dropped whatever did not fit: "HELLO" replaced by "WORLD" came back as
+    /// inside it meant the layout dropped whatever did not fit: "HELLO" replaced by "WORLD" came back as
     /// "WORL", with no warning and no error.
     /// </summary>
     [Fact]
@@ -246,10 +246,9 @@ public class TextToolsTests
     [Fact]
     public void GetTextSpans_EmptyPage_ReturnsEmpty()
     {
-        using var ms = new MemoryStream();
-        using (var doc = new iText.Kernel.Pdf.PdfDocument(new iText.Kernel.Pdf.PdfWriter(ms)))
-            doc.AddNewPage();
-        Assert.Empty(TextTools.GetTextSpans(ms.ToArray(), 1));
+        var doc = PdfEditor.Core.Pdf.PdfDocument.CreateNew();
+        doc.AddNewPage(595, 842);
+        Assert.Empty(TextTools.GetTextSpans(doc.Save(), 1));
     }
 
     [Fact]

@@ -26,8 +26,8 @@ internal enum XrefDamage
 }
 
 /// <summary>
-/// A byte-level PDF writer. Unlike <see cref="TestPdfs"/> (which drives iText and therefore can
-/// only ever produce *valid* documents) this emits exactly the bytes it is told to, so a test can
+/// A byte-level PDF writer. Unlike <see cref="TestPdfs"/> (which drives the engine's writer and therefore
+/// can only ever produce *valid* documents) this emits exactly the bytes it is told to, so a test can
 /// declare a wrong <c>/Length</c>, a cyclic page tree, or a filter that does not match its payload.
 /// Everything it produces is deterministic — no timestamps, no random object ids.
 /// </summary>
@@ -151,8 +151,8 @@ internal static class RawPdf
 
     /// <summary>
     /// A valid <paramref name="pages"/>-page document, each page carrying its own uncompressed
-    /// content stream. Byte-for-byte reproducible — unlike anything iText writes, which stamps a
-    /// timestamp-derived <c>/ID</c> and <c>/ModDate</c> into every file.
+    /// content stream. Byte-for-byte reproducible — unlike anything the engine's writer produces, which
+    /// stamps a <c>/ModDate</c> (and, for a new document, a random <c>/ID</c>) into every file.
     /// </summary>
     public static byte[] MultiPageDoc(int pages)
     {

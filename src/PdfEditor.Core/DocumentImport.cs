@@ -1,8 +1,5 @@
 using System.Diagnostics;
-using iText.IO.Image;
-using iText.Kernel.Geom;
-using iText.Kernel.Pdf;
-using iText.Kernel.Pdf.Canvas;
+using PdfEditor.Core.Pdf;
 using IOPath = System.IO.Path;
 
 namespace PdfEditor.Core;
@@ -32,8 +29,8 @@ public static class DocumentImport
     /// </summary>
     public static byte[] ImageToPdf(byte[] image)
     {
-        var data = ImageDataFactory.Create(image);
-        float iw = data.GetWidth(), ih = data.GetHeight();
+        var (xobject, pixelWidth, pixelHeight) = PdfImages.CreateXObject(image);
+        float iw = pixelWidth, ih = pixelHeight;
         if (iw <= 0 || ih <= 0) throw new ArgumentException("The image has no usable dimensions.", nameof(image));
 
         const float a4Short = 595f, a4Long = 842f, margin = 18f; // ~0.25 inch margin
@@ -45,13 +42,11 @@ public static class DocumentImport
         float w = iw * scale, h = ih * scale;
         float x = (pw - w) / 2f, y = (ph - h) / 2f;
 
-        using var output = new MemoryStream();
-        using (var pdf = new PdfDocument(new PdfWriter(output)))
-        {
-            var page = pdf.AddNewPage(new PageSize(pw, ph));
-            new PdfCanvas(page).AddImageFittedIntoRectangle(data, new Rectangle(x, y, w, h), false);
-        }
-        return output.ToArray();
+        var pdf = PdfDocument.CreateNew();
+        var page = pdf.AddNewPage(pw, ph);
+        var name = PdfResources.Add(page.GetOrCreateResources(), PdfName.XObject, "Im", xobject);
+        page.SetContent(new ContentBuilder().SaveState().Transform(w, 0, 0, h, x, y).DrawXObject(name).RestoreState().ToArray());
+        return PdfIo.Save(pdf);
     }
 
     /// <summary>

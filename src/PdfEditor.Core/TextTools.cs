@@ -1,15 +1,7 @@
 using System.Text;
-using iText.IO.Font.Constants;
-using iText.Kernel.Font;
-using iText.Kernel.Geom;
-using iText.Kernel.Pdf;
-using iText.Kernel.Pdf.Canvas;
-using iText.Kernel.Pdf.Canvas.Parser;
-using iText.Kernel.Pdf.Canvas.Parser.Data;
-using iText.Kernel.Pdf.Canvas.Parser.Listener;
-using iText.Layout;
-using iText.Layout.Element;
-using iText.Layout.Properties;
+using System.Text.RegularExpressions;
+using PdfEditor.Core.Pdf;
+using PdfEditor.Core.Pdf.Fonts;
 
 namespace PdfEditor.Core;
 
@@ -23,8 +15,8 @@ public static class TextTools
     /// <summary>Returns the text inside a region plus its dominant font size and style.</summary>
     public static RegionText GetTextInRegion(byte[] pdf, RectRegion region, string? password = null)
     {
-        using var doc = PdfIo.OpenReadOnly(pdf, password);
-        var rect = new Rectangle(region.X, region.Y, region.Width, region.Height);
+        var doc = PdfIo.OpenReadOnly(pdf, password);
+        var rect = new PdfRect(region.X, region.Y, region.Width, region.Height);
         var chunks = CollectChunks(doc, region.Page).Where(c => ContainsCenter(rect, c.BBox)).ToList();
         string dominantFont = chunks
             .Where(c => !string.IsNullOrEmpty(c.FontName))
@@ -112,8 +104,8 @@ public static class TextTools
     /// </summary>
     private static ContentKinds RemovalKindFor(byte[] pdf, RectRegion region, string? password)
     {
-        using var doc = PdfIo.OpenReadOnly(pdf, password);
-        var rect = new Rectangle(region.X, region.Y, region.Width, region.Height);
+        var doc = PdfIo.OpenReadOnly(pdf, password);
+        var rect = new PdfRect(region.X, region.Y, region.Width, region.Height);
         var chunks = CollectChunks(doc, region.Page).Where(c => ContainsCenter(rect, c.BBox)).ToList();
         // "All of it", not "any of it": one stray invisible glyph among visible text is not a scan,
         // and erasing the picture behind real text is the more destructive way to be wrong.
@@ -167,22 +159,22 @@ public static class TextTools
         {
             case "times":
             case "serif":
-                return bold && italic ? StandardFonts.TIMES_BOLDITALIC
-                    : bold ? StandardFonts.TIMES_BOLD
-                    : italic ? StandardFonts.TIMES_ITALIC
-                    : StandardFonts.TIMES_ROMAN;
+                return bold && italic ? StandardFonts.TimesBoldItalic
+                    : bold ? StandardFonts.TimesBold
+                    : italic ? StandardFonts.TimesItalic
+                    : StandardFonts.TimesRoman;
             case "courier":
             case "mono":
             case "monospace":
-                return bold && italic ? StandardFonts.COURIER_BOLDOBLIQUE
-                    : bold ? StandardFonts.COURIER_BOLD
-                    : italic ? StandardFonts.COURIER_OBLIQUE
-                    : StandardFonts.COURIER;
+                return bold && italic ? StandardFonts.CourierBoldOblique
+                    : bold ? StandardFonts.CourierBold
+                    : italic ? StandardFonts.CourierOblique
+                    : StandardFonts.Courier;
             default: // helvetica / sans-serif
-                return bold && italic ? StandardFonts.HELVETICA_BOLDOBLIQUE
-                    : bold ? StandardFonts.HELVETICA_BOLD
-                    : italic ? StandardFonts.HELVETICA_OBLIQUE
-                    : StandardFonts.HELVETICA;
+                return bold && italic ? StandardFonts.HelveticaBoldOblique
+                    : bold ? StandardFonts.HelveticaBold
+                    : italic ? StandardFonts.HelveticaOblique
+                    : StandardFonts.Helvetica;
         }
     }
 
@@ -199,15 +191,7 @@ public static class TextTools
         return (family, bold, italic);
     }
 
-    internal static iText.Kernel.Colors.Color? ParseColor(string? hex)
-    {
-        if (string.IsNullOrWhiteSpace(hex)) return null;
-        string h = hex.Trim().TrimStart('#');
-        if (h.Length != 6 ||
-            !int.TryParse(h, System.Globalization.NumberStyles.HexNumber, null, out int rgb))
-            return null;
-        return new iText.Kernel.Colors.DeviceRgb((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
-    }
+    internal static PdfColor? ParseColor(string? hex) => PdfColor.FromHex(hex);
 
     /// <summary>
     /// Finds every occurrence of a phrase across the document, honouring the match mode and case
@@ -217,22 +201,23 @@ public static class TextTools
         SearchOptions? options = null)
     {
         if (string.IsNullOrEmpty(phrase)) return Array.Empty<TextMatch>();
-        string pattern = BuildSearchPattern(phrase, options ?? new SearchOptions());
-        using var doc = PdfIo.OpenReadOnly(pdf, password);
+        var pattern = new Regex(BuildSearchPattern(phrase, options ?? new SearchOptions()),
+            RegexOptions.None, TimeSpan.FromSeconds(5));
+        var doc = PdfIo.OpenReadOnly(pdf, password);
         var matches = new List<TextMatch>();
-        for (int p = 1; p <= doc.GetNumberOfPages(); p++)
+        for (int p = 1; p <= doc.PageCount; p++)
         {
-            var strategy = new RegexBasedLocationExtractionStrategy(pattern);
-            int page = p;
-            PdfIo.Guarded($"searching page {page}", () =>
+            var locator = new RegexTextLocator(pattern);
+            var page = doc.GetPage(p);
+            PdfIo.Guarded($"searching page {p}", () =>
             {
-                PdfStructureGuard.EnsureFormXObjectsTerminate(doc.GetPage(page));
-                new PdfCanvasProcessor(strategy).ProcessPageContent(doc.GetPage(page));
+                PdfStructureGuard.EnsureFormXObjectsTerminate(page);
+                new ContentProcessor(locator).ProcessPage(page);
             });
-            foreach (var location in strategy.GetResultantLocations())
+            foreach (var location in locator.GetLocations())
             {
-                var r = location.GetRectangle();
-                matches.Add(new TextMatch(p, location.GetText(), r.GetX(), r.GetY(), r.GetWidth(), r.GetHeight()));
+                var r = location.Rect;
+                matches.Add(new TextMatch(p, location.Text, r.X, r.Y, r.Width, r.Height));
             }
         }
         return matches;
@@ -303,13 +288,13 @@ public static class TextTools
     /// paragraph is not something this editor can do — but showing the text in the wrong place beats
     /// dropping characters without a word.
     /// </summary>
-    private static Rectangle ToPageEdge(PdfPage page, RectRegion region)
+    private static PdfRect ToPageEdge(PdfPage page, RectRegion region)
     {
-        var size = page.GetPageSize();
+        var size = page.MediaBox;
         float top = region.Y + region.Height;
-        return new Rectangle(region.X, size.GetBottom(),
-            Math.Max(1f, size.GetRight() - region.X),
-            Math.Max(1f, top - size.GetBottom()));
+        return new PdfRect(region.X, size.Bottom,
+            Math.Max(1f, size.Right - region.X),
+            Math.Max(1f, top - size.Bottom));
     }
 
     /// <param name="confineToRegion">
@@ -317,58 +302,131 @@ public static class TextTools
     /// where the region is a box the user dragged and wrapping to it is the point. False when
     /// replacing existing text, where the region is only the measured bounding box of the words
     /// being replaced: confining the layout to it silently swallowed any replacement longer than
-    /// the original, because iText drops a paragraph line that does not fit the canvas
+    /// the original, because a line that does not fit the box is dropped
     /// ("HELLO" replaced by "WORLD" came out as "WORL").
     /// </param>
     private static byte[] StampText(byte[] pdf, RectRegion region, string text, float fontSize,
         string? password, bool wrap = true, string? fontName = null,
-        iText.Kernel.Colors.Color? color = null, bool confineToRegion = true)
+        PdfColor? color = null, bool confineToRegion = true)
     {
-        using var output = new MemoryStream();
-        using (var doc = PdfIo.Open(pdf, output, password))
+        var doc = PdfIo.Open(pdf, password);
+        var page = doc.GetPage(region.Page);
+        var font = PdfFont.Standard(fontName ?? StandardFonts.Helvetica);
+        // Draw in the page's default user space so the stamped text isn't thrown off by a
+        // leftover transform the page content leaves active (e.g. Chrome / Google Docs exports).
+        var name = PdfResources.Add(page.GetOrCreateResources(), PdfName.Font, "F", font.Dictionary!);
+        var canvas = new ContentBuilder();
+        var lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+        if (wrap)
         {
-            var page = doc.GetPage(region.Page);
-            var font = PdfFontFactory.CreateFont(fontName ?? StandardFonts.HELVETICA);
-            // Draw in the page's default user space so the stamped text isn't thrown off by a
-            // leftover transform the page content leaves active (e.g. Chrome / Google Docs exports).
-            var pdfCanvas = PdfContentGuard.InDefaultUserSpace(page, doc);
-            if (wrap)
-            {
-                var box = confineToRegion ? new Rectangle(region.X, region.Y, region.Width, region.Height)
-                    : ToPageEdge(page, region);
-                using var canvas = new Canvas(pdfCanvas, box);
-                var paragraph = new Paragraph(text).SetFont(font).SetFontSize(fontSize)
-                    .SetMargin(0).SetMultipliedLeading(1.05f)
-                    .SetVerticalAlignment(VerticalAlignment.TOP);
-                if (color != null) paragraph.SetFontColor(color);
-                canvas.Add(paragraph);
-            }
-            else
-            {
-                // Baseline-anchored stamp (find & replace, edit, move). The region's bottom is the
-                // descent line of the text that was there, so the baseline sits one descender-depth
-                // above it; drawing there keeps the new text in-line with the surrounding words
-                // instead of letting the layout engine's leading push it below the line (#96).
-                // Wrapping is deliberately not applied — a replaced run extends along its own line
-                // rather than reflowing onto the next one, which would collide with the line below.
-                float baseline = region.Y + fontSize * 0.21f; // approximate descender share
-                pdfCanvas.BeginText().SetFontAndSize(font, fontSize);
-                if (color != null) pdfCanvas.SetFillColor(color);
-                pdfCanvas.MoveText(region.X, baseline);
-                // Honour explicit line breaks the caller typed, one baseline-spaced line each. The
-                // leading is only emitted when there is a second line to place, so the common
-                // single-line edit stays a plain Td/Tj with nothing extra in the stream.
-                var lines = text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
-                pdfCanvas.ShowText(lines[0]);
-                if (lines.Length > 1)
-                {
-                    pdfCanvas.SetLeading(fontSize * 1.15f);
-                    for (int i = 1; i < lines.Length; i++) pdfCanvas.NewlineShowText(lines[i]);
-                }
-                pdfCanvas.EndText();
-            }
+            var box = confineToRegion ? new PdfRect(region.X, region.Y, region.Width, region.Height)
+                : ToPageEdge(page, region);
+            WrappedParagraph(canvas, font, name, fontSize, color, box, lines);
         }
-        return output.ToArray();
+        else
+        {
+            // Baseline-anchored stamp (find & replace, edit, move). The region's bottom is the
+            // descent line of the text that was there, so the baseline sits one descender-depth
+            // above it; drawing there keeps the new text in-line with the surrounding words
+            // instead of letting a layout's leading push it below the line (#96).
+            // Wrapping is deliberately not applied — a replaced run extends along its own line
+            // rather than reflowing onto the next one, which would collide with the line below.
+            float baseline = region.Y + fontSize * 0.21f; // approximate descender share
+            canvas.BeginText().Font(name, fontSize);
+            if (color is { } c) canvas.FillColor(c);
+            canvas.MoveText(region.X, baseline);
+            // Honour explicit line breaks the caller typed, one baseline-spaced line each. The
+            // leading is only emitted when there is a second line to place, so the common
+            // single-line edit stays a plain Td/Tj with nothing extra in the stream.
+            canvas.ShowText(font.Encode(lines[0]));
+            if (lines.Length > 1)
+            {
+                canvas.Leading(fontSize * 1.15f);
+                for (int i = 1; i < lines.Length; i++) canvas.NextLineShowText(font.Encode(lines[i]));
+            }
+            canvas.EndText();
+        }
+        PdfContentGuard.DrawInDefaultUserSpace(page, canvas.ToArray());
+        return PdfIo.Save(doc);
+    }
+
+    /// <summary>
+    /// Lays <paramref name="paragraphs"/> out top-down inside <paramref name="box"/>, wrapping at
+    /// spaces (and inside a word only when the word alone is wider than the box). Lines that do not
+    /// fit above the box's bottom are not drawn. The line pitch is 1.05 × the face's normal line
+    /// height (1.2 × ascender-to-descender), and the first baseline sits one normal ascent below
+    /// the top — the spacing this tool has always used for added text.
+    /// </summary>
+    private static void WrappedParagraph(ContentBuilder canvas, PdfFont font, PdfName name, float size,
+        PdfColor? color, PdfRect box, IEnumerable<string> paragraphs)
+    {
+        double normal = 1.2 * (font.Ascent - font.Descent) / 1000.0 * size;
+        double leading = 1.05 * normal;
+        double firstBaseline = box.Top - (1.2 * font.Ascent / 1000.0 * size + (leading - normal) / 2);
+
+        var lines = new List<string>();
+        foreach (var paragraph in paragraphs) lines.AddRange(Wrap(font, paragraph, size, box.Width));
+
+        canvas.BeginText().Font(name, size);
+        if (color is { } c) canvas.FillColor(c);
+        double y = firstBaseline;
+        double previousY = 0;
+        bool first = true;
+        foreach (var line in lines)
+        {
+            if (y < box.Bottom) break;
+            if (first) canvas.MoveText(box.Left, y);
+            else canvas.MoveText(0, y - previousY);
+            canvas.ShowText(font.Encode(line));
+            previousY = y;
+            first = false;
+            y -= leading;
+        }
+        canvas.EndText();
+    }
+
+    private static IEnumerable<string> Wrap(PdfFont font, string paragraph, float size, float width)
+    {
+        if (paragraph.Length == 0)
+        {
+            yield return "";
+            yield break;
+        }
+        var current = new StringBuilder();
+        foreach (var word in paragraph.Split(' '))
+        {
+            string candidate = current.Length == 0 ? word : current + " " + word;
+            if (font.MeasureText(candidate, size) <= width || current.Length == 0 && font.MeasureText(word, size) <= width)
+            {
+                current.Clear().Append(candidate);
+                continue;
+            }
+            if (current.Length > 0)
+            {
+                yield return current.ToString();
+                current.Clear();
+            }
+            foreach (var line in BreakWord(font, word, size, width, current))
+                yield return line;
+        }
+        if (current.Length > 0) yield return current.ToString();
+    }
+
+    /// <summary>
+    /// Breaks a word wider than the box on its own between characters. Every full line is returned;
+    /// the last, partial one is left in <paramref name="current"/> for the next word to join.
+    /// </summary>
+    private static IEnumerable<string> BreakWord(PdfFont font, string word, float size, float width, StringBuilder current)
+    {
+        foreach (char ch in word)
+        {
+            if (current.Length > 0 && font.MeasureText(current.ToString() + ch, size) > width)
+            {
+                yield return current.ToString();
+                current.Clear();
+            }
+            current.Append(ch);
+        }
     }
 
     /// <summary>
@@ -377,44 +435,41 @@ public static class TextTools
     /// </summary>
     public static IReadOnlyList<TextSpan> GetTextSpans(byte[] pdf, int page, string? password = null)
     {
-        using var doc = PdfIo.OpenReadOnly(pdf, password);
-        if (page < 1 || page > doc.GetNumberOfPages()) return Array.Empty<TextSpan>();
+        var doc = PdfIo.OpenReadOnly(pdf, password);
+        if (page < 1 || page > doc.PageCount) return Array.Empty<TextSpan>();
         var spans = new List<TextSpan>();
+        var pdfPage = doc.GetPage(page);
         PdfIo.Guarded($"reading the text layout of page {page}", () =>
         {
-            PdfStructureGuard.EnsureFormXObjectsTerminate(doc.GetPage(page));
-            new PdfCanvasProcessor(new SpanListener(spans)).ProcessPageContent(doc.GetPage(page));
+            PdfStructureGuard.EnsureFormXObjectsTerminate(pdfPage);
+            new ContentProcessor(new SpanListener(spans)).ProcessPage(pdfPage);
         });
         return spans;
     }
 
-    private sealed class SpanListener : IEventListener
+    private sealed class SpanListener : IContentListener
     {
         private readonly List<TextSpan> _spans;
         public SpanListener(List<TextSpan> spans) => _spans = spans;
 
-        public void EventOccurred(IEventData data, EventType type)
+        public void OnText(TextRenderInfo info)
         {
-            if (data is not TextRenderInfo t) return;
-            string text = t.GetText();
+            string text = info.Text;
             if (string.IsNullOrWhiteSpace(text)) return;
-            var asc = t.GetAscentLine();
-            var desc = t.GetDescentLine();
-            float x0 = desc.GetStartPoint().Get(0), x1 = desc.GetEndPoint().Get(0);
-            float yBottom = desc.GetStartPoint().Get(1), yTop = asc.GetStartPoint().Get(1);
+            var asc = info.AscentLine;
+            var desc = info.DescentLine;
+            float x0 = (float)desc.Start.X, x1 = (float)desc.End.X;
+            float yBottom = (float)desc.Start.Y, yTop = (float)asc.Start.Y;
             float minX = Math.Min(x0, x1), maxX = Math.Max(x0, x1);
             if (maxX <= minX || yTop <= yBottom) return; // skip zero-area / vertical runs
             _spans.Add(new TextSpan(text, minX, yBottom, maxX - minX, yTop - yBottom));
         }
-
-        public ICollection<EventType>? GetSupportedEvents() => null;
     }
 
     // ------------------------------------------------------------ extraction
 
-    private sealed record Chunk(string Text, Rectangle BBox, float FontHeight, float FontSize,
+    private sealed record Chunk(string Text, PdfRect BBox, float FontHeight, float FontSize,
         string FontName, bool Invisible);
-
     /// <summary>
     /// Recovers the type size a run was set in from the height of its transformed
     /// ascender-to-descender box.
@@ -444,79 +499,53 @@ public static class TextTools
         return boxHeight / span;
     }
 
-    /// <summary>Vertical metrics of a run's font, normalised to a 1000-unit em; (0,0) if unusable.</summary>
-    private static (float Ascender, float Descender) VerticalMetrics(PdfFont? font)
-    {
-        try
-        {
-            var metrics = font?.GetFontProgram()?.GetFontMetrics();
-            return metrics == null ? (0f, 0f) : (metrics.GetTypoAscender(), metrics.GetTypoDescender());
-        }
-        catch (Exception ex) when (ex is NullReferenceException or InvalidOperationException
-                                       or iText.Kernel.Exceptions.PdfException)
-        {
-            return (0f, 0f); // same fallback as a font with no metrics at all
-        }
-    }
-
     private static List<Chunk> CollectChunks(PdfDocument doc, int pageNumber)
     {
         var chunks = new List<Chunk>();
         var listener = new ChunkListener(chunks);
+        var page = doc.GetPage(pageNumber);
         PdfIo.Guarded($"extracting text from page {pageNumber}", () =>
         {
-            PdfStructureGuard.EnsureFormXObjectsTerminate(doc.GetPage(pageNumber));
-            new PdfCanvasProcessor(listener).ProcessPageContent(doc.GetPage(pageNumber));
+            PdfStructureGuard.EnsureFormXObjectsTerminate(page);
+            new ContentProcessor(listener).ProcessPage(page);
         });
         return chunks;
     }
 
-    private sealed class ChunkListener : IEventListener
+    private sealed class ChunkListener : IContentListener
     {
         private readonly List<Chunk> _chunks;
         public ChunkListener(List<Chunk> chunks) => _chunks = chunks;
 
-        public void EventOccurred(IEventData data, EventType type)
+        public void OnText(TextRenderInfo info)
         {
-            if (data is not TextRenderInfo t) return;
-            foreach (var single in t.GetCharacterRenderInfos())
+            foreach (var single in info.Glyphs)
             {
-                var asc = single.GetAscentLine();
-                var desc = single.GetDescentLine();
-                float minX = Math.Min(asc.GetStartPoint().Get(0), desc.GetStartPoint().Get(0));
-                float maxX = Math.Max(asc.GetEndPoint().Get(0), desc.GetEndPoint().Get(0));
-                float minY = desc.GetStartPoint().Get(1);
-                float maxY = asc.GetStartPoint().Get(1);
+                var asc = single.AscentLine;
+                var desc = single.DescentLine;
+                float minX = (float)Math.Min(asc.Start.X, desc.Start.X);
+                float maxX = (float)Math.Max(asc.End.X, desc.End.X);
+                float minY = (float)desc.Start.Y;
+                float maxY = (float)asc.Start.Y;
                 if (maxX <= minX) continue;
-                string fontName = "";
-                PdfFont? font = null;
-                try
-                {
-                    font = single.GetFont();
-                    fontName = font?.GetFontProgram()?.GetFontNames()?.GetFontName() ?? "";
-                }
-                catch { /* some embedded fonts expose no usable name; family detection just falls back */ }
                 float boxHeight = maxY - minY;
-                var (ascender, descender) = VerticalMetrics(font);
                 // Rendering mode 3 draws nothing. It is how a searchable scan carries its OCR
                 // layer: the words you see are pixels in the page image, and this text only exists
                 // to be selected and searched.
-                bool invisible = single.GetTextRenderMode() == 3;
-                _chunks.Add(new Chunk(single.GetText(),
-                    new Rectangle(minX, minY, maxX - minX, boxHeight), boxHeight,
-                    EmSizeFromBoxHeight(boxHeight, ascender, descender), fontName, invisible));
+                bool invisible = info.RenderMode == 3;
+                _chunks.Add(new Chunk(single.Text,
+                    new PdfRect(minX, minY, maxX - minX, boxHeight), boxHeight,
+                    EmSizeFromBoxHeight(boxHeight, info.Font.Ascent, info.Font.Descent), info.FontName, invisible));
             }
         }
-
-        public ICollection<EventType>? GetSupportedEvents() => null;
     }
 
-    private static bool ContainsCenter(Rectangle region, Rectangle glyph)
+    private static bool ContainsCenter(PdfRect region, PdfRect glyph)
     {
-        float cx = glyph.GetLeft() + glyph.GetWidth() / 2;
-        float cy = glyph.GetBottom() + glyph.GetHeight() / 2;
-        return cx >= region.GetLeft() && cx <= region.GetRight() &&
-               cy >= region.GetBottom() && cy <= region.GetTop();
+        float cx = glyph.Left + glyph.Width / 2;
+        float cy = glyph.Bottom + glyph.Height / 2;
+        return cx >= region.Left && cx <= region.Right &&
+               cy >= region.Bottom && cy <= region.Top;
     }
 
     private static string AssembleText(List<Chunk> chunks)
@@ -524,11 +553,15 @@ public static class TextTools
         if (chunks.Count == 0) return string.Empty;
         // Group into lines by baseline proximity, then order left-to-right.
         var lines = new List<List<Chunk>>();
-        foreach (var chunk in chunks.OrderByDescending(c => c.BBox.GetBottom()))
+        foreach (var chunk in chunks.OrderByDescending(c => c.BBox.Bottom))
         {
             var line = lines.FirstOrDefault(l =>
-                Math.Abs(l[0].BBox.GetBottom() - chunk.BBox.GetBottom()) < l[0].FontHeight * 0.6f);
-            if (line == null) lines.Add(line = new List<Chunk>());
+                Math.Abs(l[0].BBox.Bottom - chunk.BBox.Bottom) < l[0].FontHeight * 0.6f);
+            if (line == null)
+            {
+                line = new List<Chunk>();
+                lines.Add(line);
+            }
             line.Add(chunk);
         }
         var sb = new StringBuilder();
@@ -536,10 +569,10 @@ public static class TextTools
         {
             if (sb.Length > 0) sb.Append('\n');
             Chunk? prev = null;
-            foreach (var c in line.OrderBy(c => c.BBox.GetLeft()))
+            foreach (var c in line.OrderBy(c => c.BBox.Left))
             {
                 if (prev != null &&
-                    c.BBox.GetLeft() - prev.BBox.GetRight() > prev.FontHeight * 0.25f)
+                    c.BBox.Left - prev.BBox.Right > prev.FontHeight * 0.25f)
                     sb.Append(' ');
                 sb.Append(c.Text);
                 prev = c;

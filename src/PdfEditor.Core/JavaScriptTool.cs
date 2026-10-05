@@ -1,5 +1,4 @@
-using iText.Kernel.Pdf;
-using iText.Kernel.Pdf.Action;
+using PdfEditor.Core.Pdf;
 
 namespace PdfEditor.Core;
 
@@ -24,28 +23,23 @@ public static class JavaScriptTool
         if (string.IsNullOrEmpty(script))
             throw new ArgumentException("The script is empty.", nameof(script));
 
-        using var output = new MemoryStream();
-        using (var doc = PdfIo.Open(pdf, output, password))
-        {
-            var action = PdfAction.CreateJavaScript(script);
-            var tree = doc.GetCatalog().GetNameTree(PdfName.JavaScript);
-            tree.AddEntry(name.Trim(), action.GetPdfObject());
-            doc.GetCatalog().SetModified();
-        }
-        return EditResult.Of(output.ToArray());
+        var doc = PdfIo.Open(pdf, password);
+        var catalog = doc.Catalog!;
+        string key = name.Trim();
+        var entries = PdfNameTree.Read(JavaScriptTree(catalog))
+            .Where(e => e.Key.ToUnicodeString() != key).ToList();
+        entries.Add((PdfString.FromText(key), JavaScriptAction(script)));
+        PdfNameTree.Write(catalog, PdfName.JavaScript, entries);
+        return EditResult.Of(PdfIo.Save(doc));
     }
 
     /// <summary>Lists every named document-level JavaScript with its source text.</summary>
     public static IReadOnlyList<PdfScript> ListScripts(byte[] pdf, string? password = null)
     {
-        using var doc = PdfIo.OpenReadOnly(pdf, password);
-        var scripts = new List<PdfScript>();
-        foreach (var (key, value) in doc.GetCatalog().GetNameTree(PdfName.JavaScript).GetNames())
-        {
-            string name = key.ToUnicodeString();
-            scripts.Add(new PdfScript(name, ExtractSource(value)));
-        }
-        return scripts;
+        var doc = PdfIo.OpenReadOnly(pdf, password);
+        return PdfNameTree.Read(JavaScriptTree(doc.Catalog!))
+            .Select(e => new PdfScript(e.Key.ToUnicodeString(), ExtractSource(e.Value)))
+            .ToList();
     }
 
     /// <summary>
@@ -54,22 +48,27 @@ public static class JavaScriptTool
     /// </summary>
     public static EditResult RemoveScript(byte[] pdf, string name, string? password = null)
     {
-        var survivors = ListScripts(pdf, password).Where(s => s.Name != name).ToList();
+        var doc = PdfIo.Open(pdf, password);
+        var catalog = doc.Catalog!;
+        var survivors = PdfNameTree.Read(JavaScriptTree(catalog))
+            .Where(e => e.Key.ToUnicodeString() != name).ToList();
+        // Drop the whole JavaScript tree, then re-add the scripts we are keeping.
+        catalog.GetAsDictionary(PdfName.Names)?.Remove(PdfName.JavaScript);
+        if (survivors.Count > 0) PdfNameTree.Write(catalog, PdfName.JavaScript, survivors);
+        return EditResult.Of(PdfIo.Save(doc));
+    }
 
-        using var output = new MemoryStream();
-        using (var doc = PdfIo.Open(pdf, output, password))
-        {
-            // Drop the whole JavaScript tree, then re-add the scripts we are keeping.
-            doc.GetCatalog().GetPdfObject().GetAsDictionary(PdfName.Names)?.Remove(PdfName.JavaScript);
-            if (survivors.Count > 0)
-            {
-                var tree = doc.GetCatalog().GetNameTree(PdfName.JavaScript);
-                foreach (var s in survivors)
-                    tree.AddEntry(s.Name, PdfAction.CreateJavaScript(s.Script).GetPdfObject());
-            }
-            doc.GetCatalog().SetModified();
-        }
-        return EditResult.Of(output.ToArray());
+    private static PdfDictionary? JavaScriptTree(PdfDictionary catalog) =>
+        catalog.GetAsDictionary(PdfName.Names)?.GetAsDictionary(PdfName.JavaScript);
+
+    /// <summary>A JavaScript action dictionary (§12.6.4.16).</summary>
+    internal static PdfDictionary JavaScriptAction(string script)
+    {
+        var action = new PdfDictionary();
+        action.Put(PdfName.Type, PdfName.Of("Action"));
+        action.Put(PdfName.S, PdfName.JavaScript);
+        action.Put(PdfName.JS, PdfString.FromText(script));
+        return action;
     }
 
     /// <summary>Reads the script source out of a JavaScript action (the /JS string or stream).</summary>
@@ -78,7 +77,7 @@ public static class JavaScriptTool
         PdfDictionary action => action.Get(PdfName.JS) switch
         {
             PdfString s => s.ToUnicodeString(),
-            PdfStream st => System.Text.Encoding.UTF8.GetString(st.GetBytes()),
+            PdfStream st => System.Text.Encoding.UTF8.GetString(st.GetDecodedBytes()),
             _ => ""
         },
         _ => ""

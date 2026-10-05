@@ -1,7 +1,7 @@
 # acroform-text-field
 # A single AcroForm text field (TestPdfs).
 == source ==
-bytes: ~1536
+bytes: ~1024
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -15,7 +15,7 @@ acroform: needAppearances=none fields=1
   field: name=(golden.existing) type=Tx value=(recorded) hasAppearance=yes
 validation: clean
 == redact ==
-bytes: ~1792
+bytes: ~1536
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -29,7 +29,7 @@ acroform: needAppearances=none fields=1
   field: name=(golden.existing) type=Tx value=(recorded) hasAppearance=yes
 validation: clean
 == replace-region-text ==
-bytes: ~2048
+bytes: ~1536
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -44,7 +44,7 @@ acroform: needAppearances=none fields=1
   field: name=(golden.existing) type=Tx value=(recorded) hasAppearance=yes
 validation: clean
 == rotate-90 ==
-bytes: ~1536
+bytes: ~1024
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -58,7 +58,7 @@ acroform: needAppearances=none fields=1
   field: name=(golden.existing) type=Tx value=(recorded) hasAppearance=yes
 validation: clean
 == merge-with-self ==
-bytes: ~2048
+bytes: ~1792
 pdf-version: PDF-1.7
 pages: 2
 encrypted: no
@@ -75,7 +75,7 @@ page 2: media=[0 0 595 842] crop=none rotate=0 annots=1 group=none
 acroform: none
 validation: clean
 == sanitize ==
-bytes: ~1536
+bytes: ~1024
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -89,7 +89,7 @@ acroform: needAppearances=none fields=1
   field: name=(golden.existing) type=Tx value=(recorded) hasAppearance=yes
 validation: clean
 == add-text-field ==
-bytes: ~2048
+bytes: ~1792
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -104,7 +104,7 @@ acroform: needAppearances=none fields=2
   field: name=(golden.added) type=Tx value=(filled) hasAppearance=yes
 validation: clean
 == sign-image ==
-bytes: ~2048
+bytes: ~1792
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -114,7 +114,7 @@ page 1: media=[0 0 595 842] crop=none rotate=0 annots=1 group=none
   text: <empty>
   typeset: <no text>
   ops: Dox1 Qx2 cmx1 qx2
-  xobject Im1: subtype=Image size=24x12 cs=/DeviceRGB bpc=8 filter=/FlateDecode smask=yes mask=no
+  xobject Im1: subtype=Image size=24x12 cs=/DeviceRGB bpc=8 filter=/FlateDecode smask=no mask=no
 acroform: needAppearances=none fields=1
   field: name=(golden.existing) type=Tx value=(recorded) hasAppearance=yes
 validation: clean

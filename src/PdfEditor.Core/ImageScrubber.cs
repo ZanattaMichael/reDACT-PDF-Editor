@@ -1,7 +1,5 @@
 using System.Runtime.InteropServices;
-using iText.Kernel.Geom;
-using iText.Kernel.Pdf;
-using iText.Kernel.Pdf.Xobject;
+using PdfEditor.Core.Pdf;
 using SkiaSharp;
 
 namespace PdfEditor.Core;
@@ -34,35 +32,33 @@ internal static class ImageScrubber
     /// failure rather than a silent one (#88) — a decode failure in particular can be transient
     /// (memory pressure), which reads very differently from an unsupported format.
     /// </summary>
-    public static bool TryScrubPixels(PdfStream imageStream, Rectangle drawnBBox,
-        IList<Rectangle> regions, out string? failureReason, ScrubFill fill = ScrubFill.Black)
+    public static bool TryScrubPixels(PdfStream imageStream, PdfRect drawnBBox,
+        IList<PdfRect> regions, out string? failureReason, ScrubFill fill = ScrubFill.Black,
+        PdfDictionary? resources = null)
     {
         failureReason = null;
         try
         {
-            var xobject = new PdfImageXObject(imageStream);
-            byte[] bytes = xobject.GetImageBytes(true);
-            using var bitmap = SKBitmap.Decode(bytes);
+            using var bitmap = PdfImages.TryDecode(imageStream, resources, out string? decodeFailure);
             if (bitmap == null)
             {
-                failureReason = "the image could not be decoded — an unsupported/corrupt format, "
-                    + "or possibly transient memory pressure";
+                failureReason = "the image could not be decoded — " + (decodeFailure ?? "an unsupported/corrupt format");
                 return false;
             }
 
-            float sx = bitmap.Width / drawnBBox.GetWidth();
-            float sy = bitmap.Height / drawnBBox.GetHeight();
+            float sx = bitmap.Width / drawnBBox.Width;
+            float sy = bitmap.Height / drawnBBox.Height;
             var targets = new List<SKRect>();
             foreach (var region in regions)
             {
-                float left = Math.Max(region.GetLeft(), drawnBBox.GetLeft());
-                float right = Math.Min(region.GetRight(), drawnBBox.GetRight());
-                float bottom = Math.Max(region.GetBottom(), drawnBBox.GetBottom());
-                float top = Math.Min(region.GetTop(), drawnBBox.GetTop());
+                float left = Math.Max(region.Left, drawnBBox.Left);
+                float right = Math.Min(region.Right, drawnBBox.Right);
+                float bottom = Math.Max(region.Bottom, drawnBBox.Bottom);
+                float top = Math.Min(region.Top, drawnBBox.Top);
                 if (left >= right || bottom >= top) continue;
                 // Image rows run top-down while PDF user space runs bottom-up.
-                float px = (left - drawnBBox.GetLeft()) * sx;
-                float pyTop = (drawnBBox.GetTop() - top) * sy;
+                float px = (left - drawnBBox.Left) * sx;
+                float pyTop = (drawnBBox.Top - top) * sy;
                 targets.Add(SKRect.Create(px, pyTop, (right - left) * sx, (top - bottom) * sy));
             }
             if (targets.Count == 0) return true;
@@ -178,7 +174,7 @@ internal static class ImageScrubber
     {
         // Store as FlateDecoded raw RGB — universally supported and avoids
         // format-specific entries left over from the original image.
-        foreach (var key in imageStream.KeySet().ToArray())
+        foreach (var key in imageStream.Keys.ToArray())
         {
             if (!PdfName.Subtype.Equals(key) && !PdfName.Type.Equals(key))
                 imageStream.Remove(key);
@@ -188,6 +184,5 @@ internal static class ImageScrubber
         imageStream.Put(PdfName.Height, new PdfNumber(height));
         imageStream.Put(PdfName.ColorSpace, PdfName.DeviceRGB);
         imageStream.Put(PdfName.BitsPerComponent, new PdfNumber(8));
-        imageStream.SetModified();
     }
 }

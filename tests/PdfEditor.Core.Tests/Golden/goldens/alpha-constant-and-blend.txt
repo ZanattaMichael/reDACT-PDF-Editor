@@ -17,7 +17,7 @@ page 1: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == redact ==
-bytes: ~1536
+bytes: ~1280
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -33,7 +33,7 @@ page 1: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == replace-region-text ==
-bytes: ~1536
+bytes: ~1280
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -50,7 +50,7 @@ page 1: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == rotate-90 ==
-bytes: ~1024
+bytes: ~768
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -89,7 +89,7 @@ page 2: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == sanitize ==
-bytes: ~1024
+bytes: ~768
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -105,7 +105,7 @@ page 1: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == add-text-field ==
-bytes: ~1792
+bytes: ~1536
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -122,7 +122,7 @@ acroform: needAppearances=none fields=1
   field: name=(golden.added) type=Tx value=(filled) hasAppearance=yes
 validation: clean
 == sign-image ==
-bytes: ~1792
+bytes: ~1280
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -135,6 +135,6 @@ page 1: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
   font F1: subtype=Type1 base=Helvetica toUnicode=no widths=0
   gs GSa: BM=/Multiply CA=0.6 ca=0.4
   gs GSb: AIS=false BM=/Screen ca=0.75
-  xobject Im1: subtype=Image size=24x12 cs=/DeviceRGB bpc=8 filter=/FlateDecode smask=yes mask=no
+  xobject Im1: subtype=Image size=24x12 cs=/DeviceRGB bpc=8 filter=/FlateDecode smask=no mask=no
 acroform: none
 validation: clean

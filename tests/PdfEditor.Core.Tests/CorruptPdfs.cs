@@ -1,8 +1,6 @@
 using System.Globalization;
 using System.Text;
-using iText.Forms;
-using iText.Forms.Fields;
-using iText.Kernel.Pdf;
+using PdfEditor.Core.Pdf;
 
 namespace PdfEditor.Tests;
 
@@ -11,7 +9,7 @@ namespace PdfEditor.Tests;
 /// actually flag each class of defect (a validator that says "valid" for everything is worse
 /// than none). Every fixture is generated in-repo — nothing is downloaded.
 /// <para>
-/// The documents are written by hand rather than through iText because iText refuses to emit a
+/// The documents are written by hand rather than through the engine because a writer refuses to emit a
 /// broken cross-reference table, a wrong <c>/Length</c>, or undecodable stream data: the whole
 /// point of these fixtures is the corruption a writer would never produce.
 /// </para>
@@ -231,19 +229,11 @@ public static class CorruptPdfs
 
     /// <summary>
     /// A well-formed PDF 1.5+ document that stores its objects in object streams behind a
-    /// cross-reference <em>stream</em> instead of a classic table — the layout iText produces in
-    /// full-compression mode, which the byte-level checks must not mistake for corruption.
+    /// cross-reference <em>stream</em> instead of a classic table — the compact layout many
+    /// producers use, which the byte-level checks must not mistake for corruption.
     /// </summary>
-    public static byte[] FullyCompressed(byte[] source)
-    {
-        using var output = new MemoryStream();
-        using (new PdfDocument(new PdfReader(new MemoryStream(source)),
-                   new PdfWriter(output, new WriterProperties().SetFullCompressionMode(true))))
-        {
-            // Rewriting is the point; nothing to change.
-        }
-        return output.ToArray();
-    }
+    public static byte[] FullyCompressed(byte[] source) =>
+        PdfDocument.Open(source).Save(new PdfSaveOptions { ObjectStreams = true });
 
     /// <summary>Neither the page nor any ancestor carries a <c>/MediaBox</c>.</summary>
     public static byte[] MissingMediaBox()
@@ -301,18 +291,11 @@ public static class CorruptPdfs
     /// </summary>
     public static byte[] FormFieldWithoutAppearance(byte[] source)
     {
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfReader(new MemoryStream(source)), new PdfWriter(output)))
-        {
-            var form = PdfFormCreator.GetAcroForm(doc, false);
-            foreach (var field in form.GetAllFormFields().Values)
-                foreach (var widget in field.GetWidgets())
-                {
-                    widget.GetPdfObject().Remove(PdfName.AP);
-                    widget.GetPdfObject().SetModified();
-                }
-        }
-        return output.ToArray();
+        var doc = PdfDocument.Open(source);
+        foreach (var field in AcroForm.TerminalFields(doc))
+            foreach (var widget in field.Widgets)
+                widget.Remove(PdfName.AP);
+        return doc.Save();
     }
 
     /// <summary>
@@ -321,15 +304,8 @@ public static class CorruptPdfs
     /// </summary>
     public static byte[] FormFieldOrphanedFromPage(byte[] source)
     {
-        using var output = new MemoryStream();
-        using (var doc = new PdfDocument(new PdfReader(new MemoryStream(source)), new PdfWriter(output)))
-        {
-            for (int i = 1; i <= doc.GetNumberOfPages(); i++)
-            {
-                doc.GetPage(i).GetPdfObject().Remove(PdfName.Annots);
-                doc.GetPage(i).SetModified();
-            }
-        }
-        return output.ToArray();
+        var doc = PdfDocument.Open(source);
+        foreach (var page in doc.Pages) page.Dictionary.Remove(PdfName.Annots);
+        return doc.Save();
     }
 }

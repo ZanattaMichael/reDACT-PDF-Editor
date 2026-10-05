@@ -1,10 +1,10 @@
-using iText.Kernel.Pdf;
+using PdfEditor.Core.Pdf;
 
 namespace PdfEditor.Core;
 
 /// <summary>
-/// Structural pre-checks that must run before a page's content is handed to iText's content
-/// processor, for the failures iText itself does not defend against.
+/// Structural pre-checks that run before a page's content is interpreted, for the failures that
+/// must be refused up front rather than handled half-way through an edit.
 /// </summary>
 internal static class PdfStructureGuard
 {
@@ -17,19 +17,18 @@ internal static class PdfStructureGuard
     /// <summary>
     /// Rejects a page whose form-XObject graph does not terminate.
     /// <para>
-    /// <c>PdfCanvasProcessor</c> follows every <c>/Do</c> into the referenced form XObject and
-    /// processes its content recursively, with no cycle check and no depth limit. A document
-    /// containing a form XObject that lists itself in its own <c>/Resources /XObject</c> therefore
-    /// drives it into infinite recursion — and a <see cref="StackOverflowException"/> cannot be
-    /// caught on .NET, so the whole host process dies. That is a one-file denial of service against
-    /// anyone who opens a hostile PDF, and it has to be prevented rather than handled.
+    /// A form XObject that lists itself in its own <c>/Resources /XObject</c> draws itself forever.
+    /// The content interpreter stops at a cycle, but a document like that is either broken or
+    /// hostile, and an edit that silently skipped the recursion would rewrite the page from a
+    /// partial reading of it. (The engine this project used before had no cycle check at all and
+    /// overflowed the stack — process-fatal on .NET — so this guard also pins a fixed bug.)
     /// </para>
     /// </summary>
     public static void EnsureFormXObjectsTerminate(PdfPage page)
     {
         var onPath = new HashSet<PdfObject>(ReferenceEqualityComparer.Instance);
         int budget = MaxFormsInspected;
-        Walk(page.GetResources()?.GetResource(PdfName.XObject), onPath, 0, ref budget);
+        Walk(page.Resources?.GetAsDictionary(PdfName.XObject), onPath, 0, ref budget);
     }
 
     private static void Walk(PdfDictionary? xobjects, HashSet<PdfObject> onPath, int depth, ref int budget)
@@ -40,7 +39,7 @@ internal static class PdfStructureGuard
                 $"This PDF could not be read: its form XObjects nest more than {MaxFormNesting} " +
                 "levels deep, which no legitimate document does.");
 
-        foreach (var key in xobjects.KeySet().ToList())
+        foreach (var key in xobjects.Keys.ToList())
         {
             if (--budget <= 0) return;
             var form = xobjects.GetAsStream(key);

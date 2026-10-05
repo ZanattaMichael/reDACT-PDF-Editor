@@ -518,7 +518,7 @@ a missing runtime library is reported at install time rather than discovered in 
 
 ```
 extension/                         Chromium MV3 extension (UI)
-src/PdfEditor.Core/                PDF engine (iText 9 + PDFium rendering)
+src/PdfEditor.Core/                PDF engine (in-house, see src/PdfEditor.Core/Pdf/) + PDFium rendering
 src/PdfEditor.NativeHost/          native messaging host executable
 tests/PdfEditor.Core.Tests/        unit tests for the PDF engine
 tests/PdfEditor.NativeHost.Tests/  unit tests for the JSON dispatcher (in-process)
@@ -536,5 +536,7 @@ Python), the test suites, and PR expectations are covered in
 
 ## License
 
-GPL-3.0 (see `LICENSE`). Uses [iText Core](https://github.com/itext/itext-dotnet) (AGPL)
-and [PDFtoImage](https://github.com/sungaila/PDFtoImage)/PDFium for rendering.
+GPL-3.0 (see `LICENSE`). Since 3.0 the PDF engine is reDACT's own code (it no longer uses
+iText or BouncyCastle); pages are rendered with
+[PDFtoImage](https://github.com/sungaila/PDFtoImage)/PDFium. Third-party components and their
+licences are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

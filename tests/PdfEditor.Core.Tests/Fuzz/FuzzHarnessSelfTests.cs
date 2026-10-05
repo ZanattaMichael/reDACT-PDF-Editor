@@ -112,10 +112,10 @@ public class FuzzHarnessSelfTests
     }
 
     [Fact]
-    public void Harness_TreatsITextExceptionsAsHandledRejections()
+    public void Harness_TreatsEngineExceptionsAsHandledRejections()
     {
-        var result = FuzzHarness.Run("selftest-itext", Input,
-            _ => throw new iText.Kernel.Exceptions.PdfException("trailer not found"));
+        var result = FuzzHarness.Run("selftest-engine", Input,
+            _ => throw new PdfEditor.Core.Pdf.PdfFormatException("trailer not found"));
         Assert.Equal(FuzzOutcome.Rejected, result.Outcome);
     }
 
