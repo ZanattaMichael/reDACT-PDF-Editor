@@ -406,18 +406,27 @@ public static class TextTools
                 yield return current.ToString();
                 current.Clear();
             }
-            // A word wider than the box on its own is broken between characters.
-            foreach (char ch in word)
-            {
-                if (current.Length > 0 && font.MeasureText(current.ToString() + ch, size) > width)
-                {
-                    yield return current.ToString();
-                    current.Clear();
-                }
-                current.Append(ch);
-            }
+            foreach (var line in BreakWord(font, word, size, width, current))
+                yield return line;
         }
         if (current.Length > 0) yield return current.ToString();
+    }
+
+    /// <summary>
+    /// Breaks a word wider than the box on its own between characters. Every full line is returned;
+    /// the last, partial one is left in <paramref name="current"/> for the next word to join.
+    /// </summary>
+    private static IEnumerable<string> BreakWord(PdfFont font, string word, float size, float width, StringBuilder current)
+    {
+        foreach (char ch in word)
+        {
+            if (current.Length > 0 && font.MeasureText(current.ToString() + ch, size) > width)
+            {
+                yield return current.ToString();
+                current.Clear();
+            }
+            current.Append(ch);
+        }
     }
 
     /// <summary>
