@@ -251,9 +251,34 @@ internal static class PdfFilters
                 int distance = DistBase[ds] + Bits(DistExtra[ds]);
                 if (distance > _outLen) throw new CorruptDataException("The Flate data refers back past its own start: it is corrupt.");
                 if (_outLen + length > _out.Length) Grow(length);
-                int from = _outLen - distance;
-                for (int i = 0; i < length; i++) _out[_outLen++] = _out[from + i];
+                CopyBack(distance, length);
             }
+        }
+
+        /// <summary>
+        /// Appends <paramref name="length"/> bytes copied from <paramref name="distance"/> back.
+        /// When they overlap, the copy repeats the last <paramref name="distance"/> bytes, so it is
+        /// done in chunks of that period (each chunk's source is already written); a run of one
+        /// byte, which is what a bomb of zeros is made of, is a fill.
+        /// </summary>
+        private void CopyBack(int distance, int length)
+        {
+            var output = _out.AsSpan();
+            int from = _outLen - distance;
+            if (distance == 1)
+            {
+                output.Slice(_outLen, length).Fill(output[from]);
+            }
+            else
+            {
+                for (int copied = 0; copied < length;)
+                {
+                    int n = Math.Min(distance, length - copied);
+                    output.Slice(from + copied, n).CopyTo(output.Slice(_outLen + copied, n));
+                    copied += n;
+                }
+            }
+            _outLen += length;
         }
 
         private void Dynamic()

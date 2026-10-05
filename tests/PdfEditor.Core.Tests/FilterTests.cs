@@ -38,6 +38,21 @@ public class FilterTests
         Assert.Equal(Sample, Decode(output.ToArray(), PdfName.FlateDecode));
     }
 
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(7)]
+    [InlineData(300)]
+    public void Flate_LongRepeats_ExpandCorrectly(int period)
+    {
+        // A short pattern repeated far past its own length compresses to back-references that
+        // overlap what they copy, the case where a block copy would read bytes not yet written.
+        var pattern = Enumerable.Range(0, period).Select(i => (byte)(i * 37 + 11)).ToArray();
+        byte[] data = Enumerable.Range(0, 100_000).Select(i => pattern[i % period]).ToArray();
+        Assert.Equal(data, Decode(PdfFilters.FlateEncode(data), PdfName.FlateDecode));
+    }
+
     [Fact]
     public void Flate_BareDeflate_AsSomeProducersWriteIt()
     {

@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Globalization;
 using System.Text;
 
@@ -68,18 +69,21 @@ internal sealed class PdfLexer
     /// <summary>Skips whitespace and comments.</summary>
     public void SkipWhitespace()
     {
+        // Vectorised: a stream can be megabytes of padding (a decompression bomb of zeros is
+        // nothing but whitespace), and stepping over it a byte at a time is the slow part.
         while (Position < _end)
         {
-            byte b = _data[Position];
-            if (IsWhitespace(b)) { Position++; continue; }
-            if (b == '%')
-            {
-                while (Position < _end && _data[Position] != '\n' && _data[Position] != '\r') Position++;
-                continue;
-            }
-            break;
+            int run = _data.AsSpan(Position, _end - Position).IndexOfAnyExcept(WhitespaceBytes);
+            if (run < 0) { Position = _end; return; }
+            Position += run;
+            if (_data[Position] != '%') return;
+            int eol = _data.AsSpan(Position, _end - Position).IndexOfAny(LineEnds);
+            Position = eol < 0 ? _end : Position + eol;
         }
     }
+
+    private static readonly SearchValues<byte> WhitespaceBytes = SearchValues.Create(new byte[] { 0, 9, 10, 12, 13, 32 });
+    private static readonly SearchValues<byte> LineEnds = SearchValues.Create(new byte[] { 10, 13 });
 
     /// <summary>Reads the next token. Returns false at end of input.</summary>
     public bool Next()
