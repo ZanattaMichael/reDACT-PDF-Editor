@@ -40,8 +40,8 @@ internal static class FuzzCorpus
     /// plausible place rather than producing obvious garbage that the reader rejects at byte 1.
     /// <para>
     /// They are all written by <see cref="RawPdf"/> (or by <see cref="TestPdfs.ChromeStyleLeftoverCtm"/>,
-    /// which is likewise hand-written) rather than by iText, because <em>iText's output is not
-    /// reproducible</em>: it stamps a timestamp-derived <c>/ID</c> and <c>/ModDate</c> into every
+    /// which is likewise hand-written) rather than by the engine's writer, because <em>its output is not
+    /// reproducible</em>: it stamps a <c>/ModDate</c> (and, for a new document, a random <c>/ID</c>) into every
     /// file, so two calls in the same process already differ. Seeding a fuzzer with those would
     /// make every failure a one-off that cannot be reproduced from the recorded seed.
     /// </para>

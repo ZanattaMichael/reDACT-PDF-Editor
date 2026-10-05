@@ -1,5 +1,5 @@
-# nested-forms-itext-3
-# iText-built nested form XObjects (TestPdfs).
+# nested-forms-engine-3
+# Engine-built nested form XObjects (TestPdfs).
 == source ==
 bytes: ~1536
 pdf-version: PDF-1.7
@@ -22,7 +22,7 @@ page 1: media=[0 0 595 842] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == redact ==
-bytes: ~2048
+bytes: ~2560
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -33,17 +33,32 @@ page 1: media=[0 0 595 842] crop=none rotate=0 annots=0 group=none
   typeset: Helvetica@12.0
   ops: BTx1 Dox1 ETx1 Qx2 Tdx1 Tfx1 Tjx1 cmx1 fx1 qx2 rex1 rgx1
   font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
+  xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
+    ops: Dox1 Qx1 qx1
+    xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
+      ops: Dox1 Qx1 qx1
+      xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
+        ops: BTx1 ETx1 Tdx1 Tfx1 Tjx1
+        font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
   xobject Fm2: subtype=Form bbox=[0 0 200 120] matrix=none group=none
     ops: Dox1 Qx1 qx1
+    xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
+      ops: Dox1 Qx1 qx1
+      xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
+        ops: BTx1 ETx1 Tdx1 Tfx1 Tjx1
+        font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
     xobject Fm2: subtype=Form bbox=[0 0 200 120] matrix=none group=none
       ops: Dox1 Qx1 qx1
+      xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
+        ops: BTx1 ETx1 Tdx1 Tfx1 Tjx1
+        font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
       xobject Fm2: subtype=Form bbox=[0 0 200 120] matrix=none group=none
         ops: BTx1 ETx1 TJx1 Tdx1 Tfx1
         font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
 acroform: none
 validation: clean
 == replace-region-text ==
-bytes: ~2304
+bytes: ~2560
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -55,10 +70,25 @@ page 1: media=[0 0 595 842] crop=none rotate=0 annots=0 group=none
   ops: BTx2 Dox1 ETx2 Qx2 Tdx2 Tfx2 Tjx2 cmx1 qx2
   font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
   font F2: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
+  xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
+    ops: Dox1 Qx1 qx1
+    xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
+      ops: Dox1 Qx1 qx1
+      xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
+        ops: BTx1 ETx1 Tdx1 Tfx1 Tjx1
+        font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
   xobject Fm2: subtype=Form bbox=[0 0 200 120] matrix=none group=none
     ops: Dox1 Qx1 qx1
+    xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
+      ops: Dox1 Qx1 qx1
+      xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
+        ops: BTx1 ETx1 Tdx1 Tfx1 Tjx1
+        font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
     xobject Fm2: subtype=Form bbox=[0 0 200 120] matrix=none group=none
       ops: Dox1 Qx1 qx1
+      xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
+        ops: BTx1 ETx1 Tdx1 Tfx1 Tjx1
+        font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
       xobject Fm2: subtype=Form bbox=[0 0 200 120] matrix=none group=none
         ops: BTx1 ETx1 TJx1 Tdx1 Tfx1
         font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
@@ -119,7 +149,7 @@ page 2: media=[0 0 595 842] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == sanitize ==
-bytes: ~1792
+bytes: ~1536
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -140,7 +170,7 @@ page 1: media=[0 0 595 842] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == add-text-field ==
-bytes: ~2560
+bytes: ~2304
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -162,7 +192,7 @@ acroform: needAppearances=none fields=1
   field: name=(golden.added) type=Tx value=(filled) hasAppearance=yes
 validation: clean
 == sign-image ==
-bytes: ~2304
+bytes: ~2048
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -180,6 +210,6 @@ page 1: media=[0 0 595 842] crop=none rotate=0 annots=0 group=none
       xobject Fm1: subtype=Form bbox=[0 0 200 120] matrix=none group=none
         ops: BTx1 ETx1 Tdx1 Tfx1 Tjx1
         font F1: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
-  xobject Im1: subtype=Image size=24x12 cs=/DeviceRGB bpc=8 filter=/FlateDecode smask=yes mask=no
+  xobject Im1: subtype=Image size=24x12 cs=/DeviceRGB bpc=8 filter=/FlateDecode smask=no mask=no
 acroform: none
 validation: clean

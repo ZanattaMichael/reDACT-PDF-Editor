@@ -66,6 +66,11 @@ jobs:
         # fail the gate. `.mjs` is separate from the `extension/**/*.js` entry because the glob
         # matches on the literal extension -- a .mjs file is not a .js file to Sonar.
         #
+        # src/PdfEditor.Core/Pdf/Fonts/Resources/ holds Adobe's font metrics, glyph lists and the
+        # MustRead.html their licence requires to ship unmodified: third-party data, like
+        # node_modules, so it is not analysed (its 1990s HTML cannot be fixed without breaking
+        # that licence).
+        #
         # Keep comments HERE, above the folded scalar. A `#` line inside the `>` block below is
         # not a YAML comment: it is folded into the command, and the shell then treats it as a
         # comment and silently discards everything after it -- which dropped this whole setting.
@@ -77,7 +82,7 @@ jobs:
           /o:"zanattamichael"
           /d:sonar.token="$SONAR_TOKEN"
           /d:sonar.host.url="https://sonarcloud.io"
-          /d:sonar.exclusions="**/bin/**,**/obj/**,**/node_modules/**,coverage-report/**,coverage-results/**,coverage-sonar/**,dist/**,e2e/test-results/**,e2e/playwright-report/**"
+          /d:sonar.exclusions="**/bin/**,**/obj/**,**/node_modules/**,coverage-report/**,coverage-results/**,coverage-sonar/**,dist/**,e2e/test-results/**,e2e/playwright-report/**,src/PdfEditor.Core/Pdf/Fonts/Resources/**"
           /d:sonar.cs.opencover.reportsPaths="coverage-sonar/**/coverage.opencover.xml"
           /d:sonar.coverage.exclusions="**/*.css,**/*.html,**/*.yml,**/*.yaml,**/*.ps1,**/*.sh,**/*.py,**/*.mjs,extension/**/*.js,e2e/**/*.js"
       - name: Build

@@ -1,17 +1,14 @@
-using iText.IO.Image;
-using iText.Kernel.Geom;
-using iText.Kernel.Pdf.Canvas;
-using iText.Kernel.Pdf.Canvas.Parser;
-using iText.Kernel.Pdf.Canvas.Parser.Data;
-using iText.Kernel.Pdf.Canvas.Parser.Listener;
+using PdfEditor.Core.Pdf;
 
 namespace PdfEditor.Core;
 
 /// <summary>
 /// Repositions raster images on a page. Because a placed image is baked into the page content
-/// stream, moving it means removing the original draw (like the text-move tool does) and re-drawing
-/// the same image bytes at the shifted rectangle — in the page's default user space so it lands
-/// correctly even on Chrome/Google-Docs PDFs that leave a transform active.
+/// stream, moving it means removing the original draw (like the text-move tool does) and drawing
+/// the same image again at the shifted rectangle — in the page's default user space so it lands
+/// correctly even on Chrome/Google-Docs PDFs that leave a transform active. The image object
+/// itself is reused, not re-encoded, so its colour space, masks and compression come through
+/// unchanged.
 /// </summary>
 public static class ImageTools
 {
@@ -27,69 +24,61 @@ public static class ImageTools
 
         // Remove the original image content over each image's own bounds, then redraw shifted.
         var removeRegions = images
-            .Select(i => new RectRegion(page, i.Rect.GetX(), i.Rect.GetY(), i.Rect.GetWidth(), i.Rect.GetHeight()))
+            .Select(i => new RectRegion(page, i.Rect.X, i.Rect.Y, i.Rect.Width, i.Rect.Height))
             .ToList();
         var removed = Redactor.RemoveContent(pdf, removeRegions, password);
 
-        using var output = new MemoryStream();
-        using (var doc = PdfIo.Open(removed.Pdf, output, password))
+        var doc = PdfIo.Open(removed.Pdf, password);
+        var target = doc.GetPage(page);
+        var resources = target.GetOrCreateResources();
+        var canvas = new ContentBuilder();
+        foreach (var (image, rect) in images)
         {
-            var canvas = PdfContentGuard.InDefaultUserSpace(doc.GetPage(page), doc);
-            foreach (var img in images)
-            {
-                var data = ImageDataFactory.Create(img.Bytes);
-                var dest = new Rectangle(img.Rect.GetX() + dx, img.Rect.GetY() + dy,
-                    img.Rect.GetWidth(), img.Rect.GetHeight());
-                canvas.AddImageFittedIntoRectangle(data, dest, false);
-            }
+            var name = PdfResources.Add(resources, PdfName.XObject, "Im", image);
+            canvas.SaveState()
+                .Transform(rect.Width, 0, 0, rect.Height, rect.X + dx, rect.Y + dy)
+                .DrawXObject(name)
+                .RestoreState();
         }
-        return new EditResult(output.ToArray(), removed.Warnings);
+        PdfContentGuard.DrawInDefaultUserSpace(target, canvas.ToArray());
+        return new EditResult(PdfIo.Save(doc), removed.Warnings);
     }
 
-    private static List<(byte[] Bytes, Rectangle Rect)> FindImages(byte[] pdf, int page,
+    /// <summary>
+    /// The images drawn over <paramref name="region"/>, each as an XObject (an inline image is
+    /// converted to one) carried over from the source document, with the rectangle it covers.
+    /// </summary>
+    private static List<(PdfStream Image, PdfRect Rect)> FindImages(byte[] pdf, int page,
         RectRegion region, string? password)
     {
-        using var doc = PdfIo.OpenReadOnly(pdf, password);
-        if (page < 1 || page > doc.GetNumberOfPages())
+        var doc = PdfIo.OpenReadOnly(pdf, password);
+        if (page < 1 || page > doc.PageCount)
             throw new ArgumentOutOfRangeException(nameof(page), $"Page {page} does not exist.");
-        var finder = new ImageFinder(new Rectangle(region.X, region.Y, region.Width, region.Height));
-        new PdfCanvasProcessor(finder).ProcessPageContent(doc.GetPage(page));
+        var pdfPage = doc.GetPage(page);
+        var finder = new ImageFinder(new PdfRect(region.X, region.Y, region.Width, region.Height), pdfPage.Resources);
+        PdfIo.Guarded($"scanning images on page {page}", () => new ContentProcessor(finder).ProcessPage(pdfPage));
         return finder.Found;
     }
 
-    private sealed class ImageFinder : IEventListener
+    private sealed class ImageFinder : IContentListener
     {
-        private readonly Rectangle _region;
-        public List<(byte[] Bytes, Rectangle Rect)> Found { get; } = new();
+        private readonly PdfRect _region;
+        private readonly PdfDictionary? _resources;
+        public List<(PdfStream Image, PdfRect Rect)> Found { get; } = new();
 
-        public ImageFinder(Rectangle region) => _region = region;
-
-        public void EventOccurred(IEventData data, EventType type)
+        public ImageFinder(PdfRect region, PdfDictionary? resources)
         {
-            if (type != EventType.RENDER_IMAGE || data is not ImageRenderInfo info) return;
-            var m = info.GetImageCtm();
-            // An image draws in the unit square transformed by the CTM; for an axis-aligned
-            // placement the on-page rectangle is (I31, I32) with size (I11, I22).
-            float w = m.Get(Matrix.I11), h = m.Get(Matrix.I22);
-            float x = m.Get(Matrix.I31), y = m.Get(Matrix.I32);
-            var rect = new Rectangle(Math.Min(x, x + w), Math.Min(y, y + h), Math.Abs(w), Math.Abs(h));
-            if (!Intersects(rect, _region)) return;
-            try
-            {
-                var bytes = info.GetImage()?.GetImageBytes();
-                if (bytes is { Length: > 0 }) Found.Add((bytes, rect));
-            }
-            catch
-            {
-                // Unsupported/undecodable image encoding — skip it rather than fail the whole move.
-            }
+            _region = region;
+            _resources = resources;
         }
 
-        public ICollection<EventType> GetSupportedEvents() =>
-            new HashSet<EventType> { EventType.RENDER_IMAGE };
-
-        private static bool Intersects(Rectangle a, Rectangle b) =>
-            a.GetLeft() < b.GetRight() && b.GetLeft() < a.GetRight() &&
-            a.GetBottom() < b.GetTop() && b.GetBottom() < a.GetTop();
+        public void OnImage(ImageRenderInfo info)
+        {
+            var rect = info.BoundingBox;
+            if (!rect.Intersects(_region)) return;
+            var image = info.Stream
+                ?? PdfImages.ExpandInline(info.InlineDictionary!, info.InlineData ?? Array.Empty<byte>(), _resources);
+            Found.Add((image, rect));
+        }
     }
 }

@@ -1,5 +1,4 @@
-using iText.Kernel.Exceptions;
-using iText.Kernel.Pdf;
+using PdfEditor.Core.Pdf;
 
 namespace PdfEditor.Core;
 
@@ -13,45 +12,21 @@ public static class Encryptor
             throw new ArgumentException("A user password is required.", nameof(userPassword));
         ownerPassword ??= userPassword;
 
-        using var output = new MemoryStream();
-        var writerProperties = new WriterProperties().SetStandardEncryption(
-            System.Text.Encoding.UTF8.GetBytes(userPassword),
-            System.Text.Encoding.UTF8.GetBytes(ownerPassword),
-            EncryptionConstants.ALLOW_PRINTING,
-            EncryptionConstants.ENCRYPTION_AES_256);
-
-        var readerProperties = new ReaderProperties();
-        if (!string.IsNullOrEmpty(currentPassword))
-            readerProperties.SetPassword(System.Text.Encoding.UTF8.GetBytes(currentPassword));
-        var reader = new PdfReader(new MemoryStream(pdf), readerProperties);
-        reader.SetUnethicalReading(true);
-        using (new PdfDocument(reader, new PdfWriter(output, writerProperties)))
-        {
-        }
-        return output.ToArray();
+        var doc = PdfIo.Open(pdf, currentPassword);
+        return PdfIo.Save(doc, new PdfSaveOptions { Encryption = (userPassword, ownerPassword) });
     }
 
     /// <summary>Removes password protection (requires the current password).</summary>
-    public static byte[] Decrypt(byte[] pdf, string password)
-    {
-        using var output = new MemoryStream();
-        using (PdfIo.Open(pdf, output, password))
-        {
-        }
-        return output.ToArray();
-    }
+    public static byte[] Decrypt(byte[] pdf, string password) => PdfIo.Save(PdfIo.Open(pdf, password));
 
     public static bool IsEncrypted(byte[] pdf)
     {
         try
         {
-            PdfDocument? doc = null;
-            // Guarded for the same reason as PdfIo.Open: a catalog that is not a dictionary makes
-            // iText's constructor throw a bare InvalidCastException, which tells a caller nothing.
-            PdfIo.Guarded("opening the document", () => doc = new PdfDocument(new PdfReader(new MemoryStream(pdf))));
-            using (doc) return false;
+            PdfIo.Open(pdf);
+            return false;
         }
-        catch (BadPasswordException)
+        catch (PdfPasswordException)
         {
             return true;
         }
@@ -62,10 +37,10 @@ public static class Encryptor
     {
         try
         {
-            using var doc = PdfIo.OpenReadOnly(pdf, password);
+            PdfIo.OpenReadOnly(pdf, password);
             return true;
         }
-        catch (BadPasswordException)
+        catch (PdfPasswordException)
         {
             return false;
         }

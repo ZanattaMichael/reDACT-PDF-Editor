@@ -1,5 +1,4 @@
-using iText.Kernel.Pdf;
-using iText.Kernel.Utils;
+using PdfEditor.Core.Pdf;
 
 namespace PdfEditor.Core;
 
@@ -11,24 +10,29 @@ public static class PageTools
     /// from <paramref name="order"/> are dropped, so this single operation covers both reordering
     /// and deleting pages (a page number may repeat to duplicate a page). The order must reference
     /// at least one existing page.
+    /// <para>
+    /// The pages are copied into a new document rather than re-linked in place: a dropped page
+    /// must be gone from the file, not merely missing from the page tree while a bookmark or link
+    /// still reaches (and so still writes) it.
+    /// </para>
     /// </summary>
     public static EditResult Arrange(byte[] pdf, IReadOnlyList<int> order, string? password = null)
     {
         if (order.Count == 0)
             throw new ArgumentException("At least one page must remain.", nameof(order));
 
-        using var source = PdfIo.OpenReadOnly(pdf, password);
-        int count = source.GetNumberOfPages();
+        var source = PdfIo.OpenReadOnly(pdf, password);
+        int count = source.PageCount;
         foreach (int n in order)
             if (n < 1 || n > count)
                 throw new ArgumentOutOfRangeException(nameof(order), $"Page {n} does not exist.");
 
-        using var output = new MemoryStream();
-        using (var target = new PdfDocument(new PdfWriter(output)))
-        {
-            new PdfMerger(target).Merge(source, order.ToList());
-        }
-        return EditResult.Of(output.ToArray());
+        var target = PdfDocument.CreateNew();
+        var outlines = new List<PdfImporter.OutlineItem>();
+        var pages = PdfIo.Guarded("copying pages", () => PdfImporter.CopyPages(source, order, target, outlines));
+        target.SetPages(pages);
+        PdfImporter.LinkOutlines(target, outlines);
+        return EditResult.Of(PdfIo.Save(target));
     }
 
     /// <summary>
@@ -44,24 +48,20 @@ public static class PageTools
         if (delta % 90 != 0)
             throw new ArgumentException("Rotation must be a multiple of 90 degrees.", nameof(deltaDegrees));
 
-        using var output = new MemoryStream();
-        using (var doc = PdfIo.Open(pdf, output, password))
-        {
-            int count = doc.GetNumberOfPages();
-            var targets = pages.Count == 0
-                ? Enumerable.Range(1, count).ToList()
-                : pages.Distinct().ToList();
+        var doc = PdfIo.Open(pdf, password);
+        int count = doc.PageCount;
+        var targets = pages.Count == 0
+            ? Enumerable.Range(1, count).ToList()
+            : pages.Distinct().ToList();
 
-            foreach (int n in targets)
-            {
-                if (n < 1 || n > count)
-                    throw new ArgumentOutOfRangeException(nameof(pages), $"Page {n} does not exist.");
-                if (delta == 0) continue;
-                var page = doc.GetPage(n);
-                int current = ((page.GetRotation() % 360) + 360) % 360;
-                page.SetRotation((current + delta) % 360);
-            }
+        foreach (int n in targets)
+        {
+            if (n < 1 || n > count)
+                throw new ArgumentOutOfRangeException(nameof(pages), $"Page {n} does not exist.");
+            if (delta == 0) continue;
+            var page = doc.GetPage(n);
+            page.Rotation = (page.Rotation + delta) % 360;
         }
-        return EditResult.Of(output.ToArray());
+        return EditResult.Of(PdfIo.Save(doc));
     }
 }

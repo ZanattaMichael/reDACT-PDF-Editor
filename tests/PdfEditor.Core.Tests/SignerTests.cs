@@ -1,5 +1,8 @@
-using iText.Kernel.Pdf;
+using System.Security.Cryptography;
+using System.Security.Cryptography.Pkcs;
+using System.Security.Cryptography.X509Certificates;
 using PdfEditor.Core;
+using PdfEditor.Core.Pdf;
 using Xunit;
 
 namespace PdfEditor.Tests;
@@ -46,14 +49,13 @@ public class SignerTests
         Assert.True(signature.IntegrityValid);
 
         // The visible appearance is a widget annotation on page 1 at the requested rect.
-        using var doc = new iText.Kernel.Pdf.PdfDocument(
-            new iText.Kernel.Pdf.PdfReader(new MemoryStream(signed)));
+        var doc = PdfDocument.Open(signed);
         var widget = Assert.Single(doc.GetPage(1).GetAnnotations());
-        var rect = widget.GetRectangle().ToRectangle();
-        Assert.Equal(350, rect.GetLeft(), 0.5);
-        Assert.Equal(80, rect.GetBottom(), 0.5);
-        Assert.Equal(180, rect.GetWidth(), 0.5);
-        Assert.Equal(60, rect.GetHeight(), 0.5);
+        var rect = PdfRect.FromArray(widget.GetAsArray(PdfName.Rect))!.Value;
+        Assert.Equal(350, rect.Left, 0.5);
+        Assert.Equal(80, rect.Bottom, 0.5);
+        Assert.Equal(180, rect.Width, 0.5);
+        Assert.Equal(60, rect.Height, 0.5);
     }
 
     [Fact]
@@ -106,9 +108,9 @@ public class SignerTests
         // The appearance image lives in the widget's own appearance stream, not the page's
         // content stream, so it must be found by walking the annotation's /AP /N resources
         // (possibly through nested form XObjects) rather than via TestPdfAssert.CountImages.
-        using var doc = new PdfDocument(new PdfReader(new MemoryStream(signed)));
+        var doc = PdfDocument.Open(signed);
         var widget = Assert.Single(doc.GetPage(1).GetAnnotations());
-        var appearance = widget.GetPdfObject().GetAsDictionary(PdfName.AP)?.GetAsStream(PdfName.N);
+        var appearance = widget.GetAsDictionary(PdfName.AP)?.GetAsStream(PdfName.N);
         Assert.NotNull(appearance);
         var resources = appearance!.GetAsDictionary(PdfName.Resources);
         Assert.NotNull(resources);
@@ -119,7 +121,7 @@ public class SignerTests
     {
         var xobjects = resources.GetAsDictionary(PdfName.XObject);
         if (xobjects == null) return false;
-        foreach (var key in xobjects.KeySet())
+        foreach (var key in xobjects.Keys)
         {
             var stream = xobjects.GetAsStream(key);
             if (stream == null) continue;
@@ -144,20 +146,19 @@ public class SignerTests
     }
 
     /// <summary>Builds a PKCS#12 file containing only a certificate (no key entry), by
-    /// stripping the key out of a normally generated one.</summary>
+    /// re-packaging the certificate of a normally generated one without its key.</summary>
     private static byte[] MakeCertOnlyPkcs12(string password)
     {
         byte[] full = CertificateFactory.CreateSelfSignedPkcs12("No Key", password);
-        var source = new Org.BouncyCastle.Pkcs.Pkcs12StoreBuilder().Build();
-        source.Load(new MemoryStream(full), password.ToCharArray());
-        string alias = source.Aliases.First(source.IsKeyEntry);
-        var chain = source.GetCertificateChain(alias);
+        using var withKey = new X509Certificate2(full, password);
 
-        var certOnly = new Org.BouncyCastle.Pkcs.Pkcs12StoreBuilder().Build();
-        certOnly.SetCertificateEntry("cert-only", chain[0]);
-        using var output = new MemoryStream();
-        certOnly.Save(output, password.ToCharArray(), new Org.BouncyCastle.Security.SecureRandom());
-        return output.ToArray();
+        var contents = new Pkcs12SafeContents();
+        contents.AddCertificate(new X509Certificate2(withKey.RawData));
+        var builder = new Pkcs12Builder();
+        builder.AddSafeContentsEncrypted(contents, password,
+            new PbeParameters(PbeEncryptionAlgorithm.Aes256Cbc, HashAlgorithmName.SHA256, 2048));
+        builder.SealWithMac(password, HashAlgorithmName.SHA256, 2048);
+        return builder.Encode();
     }
 
     [Fact]

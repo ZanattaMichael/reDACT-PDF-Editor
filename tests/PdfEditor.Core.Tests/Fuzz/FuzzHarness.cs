@@ -86,7 +86,7 @@ internal static class FuzzHarness
     /// message a user can act on.
     /// <para>
     /// A deny-list rather than an allow-list, because the engine legitimately surfaces typed
-    /// failures from several libraries (iText's <c>PdfException</c>, PDFtoImage's
+    /// failures from several sources (the engine's <c>PdfFormatException</c>, PDFtoImage's
     /// <c>PdfInvalidFormatException</c>, …) and new ones must not silently count as violations.
     /// </para>
     /// </summary>

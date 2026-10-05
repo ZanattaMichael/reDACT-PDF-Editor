@@ -1,9 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
-using iText.Forms;
-using iText.Forms.Fields;
-using iText.Kernel.Pdf;
+using PdfEditor.Core.Pdf;
 
 namespace PdfEditor.Core;
 
@@ -352,9 +350,8 @@ public static class ExportValidator
         {
             CheckRepairedXref(document, findings);
             var catalog = CheckCatalog(document, findings);
-            // The page tree is walked directly rather than through PdfDocument.GetPage: iText
-            // trusts /Count, so on a document whose count is wrong it throws instead of
-            // reporting — and reporting is this class's whole job.
+            // The page tree is walked directly, trusting nothing about /Count, so a tree whose
+            // count lies is reported rather than fatal — reporting is this class's whole job.
             var pages = catalog is null ? new List<PdfDictionary>() : CollectPages(catalog, findings);
             CheckStreamsDecode(document, findings);
             CheckAcroForm(document, pages, findings);
@@ -365,37 +362,27 @@ public static class ExportValidator
                 $"Validation stopped: the document threw while being inspected ({ex.GetType().Name}: "
                 + $"{ex.Message}). The remaining checks could not run."));
         }
-        finally
-        {
-            document.Close();
-        }
     }
 
     private static void CheckRepairedXref(PdfDocument document, List<ValidationFinding> findings)
     {
-        var reader = document.GetReader();
-        if (reader is null) return;
-        bool rebuilt = reader.HasRebuiltXref();
-        if (!rebuilt && !reader.HasFixedXref()) return;
+        if (!document.XrefRebuilt) return;
         findings.Add(new ValidationFinding("PDF005", ValidationSeverity.Warning, "cross-reference table",
-            (rebuilt
-                ? "The parser could not use the cross-reference table at all and rebuilt it by "
-                  + "scanning the whole file for object headers. "
-                : "The parser had to repair the cross-reference table while reading it. ")
+            "The parser could not use the cross-reference table at all and rebuilt it by "
+            + "scanning the whole file for object headers. "
             + "The document still opens here, but the table as written is wrong and stricter "
             + "consumers (and anything appending an incremental update) will break."));
     }
 
     /// <summary>
-    /// Returns the document catalog, or null when it is unusable. Note that iText repairs the
-    /// catalog reference while parsing (it will even stamp /Type /Catalog onto whatever the
-    /// trailer's /Root happens to name), so a /Root pointing at the wrong object surfaces here as
-    /// a catalog with no page tree rather than as a type mismatch — hence the wording.
+    /// Returns the document catalog, or null when it is unusable. A /Root pointing at the wrong
+    /// object surfaces here as a catalog with no page tree rather than as a type mismatch — hence
+    /// the wording.
     /// </summary>
     private static PdfDictionary? CheckCatalog(PdfDocument document, List<ValidationFinding> findings)
     {
-        var root = document.GetCatalog().GetPdfObject();
-        if (root.Get(PdfName.Pages) is not null) return root;
+        var root = document.Catalog;
+        if (root?.Get(PdfName.Pages) is not null) return root;
 
         findings.Add(new ValidationFinding("PDF011", ValidationSeverity.Error, "trailer /Root",
             "The document catalog has no /Pages entry, so there is no page tree to render. Either "
@@ -408,7 +395,8 @@ public static class ExportValidator
     private static List<PdfDictionary> CollectPages(PdfDictionary catalog, List<ValidationFinding> findings)
     {
         var pages = new List<PdfDictionary>();
-        Descend(catalog.GetAsDictionary(PdfName.Pages), pages, new HashSet<PdfDictionary>(), 0);
+        Descend(catalog.GetAsDictionary(PdfName.Pages), pages,
+            new HashSet<PdfDictionary>(ReferenceEqualityComparer.Instance), 0);
 
         if (pages.Count == 0)
         {
@@ -418,12 +406,12 @@ public static class ExportValidator
             return pages;
         }
 
-        int? declared = catalog.GetAsDictionary(PdfName.Pages)?.GetAsNumber(PdfName.Count)?.IntValue();
+        int? declared = catalog.GetAsDictionary(PdfName.Pages)?.GetAsInt(PdfName.Count);
         if (declared is not null && declared != pages.Count)
             findings.Add(new ValidationFinding("PDF012", ValidationSeverity.Warning, "page tree /Count",
                 $"The page tree declares /Count {declared} but only {pages.Count} page(s) are "
                 + "reachable through its /Kids. Viewers that trust /Count show the wrong page "
-                + "count, and iText itself throws when asked for the missing pages."));
+                + "count, and some refuse the missing pages outright."));
 
         for (int i = 0; i < pages.Count; i++) CheckPage(pages[i], i + 1, findings);
         return pages;
@@ -440,7 +428,7 @@ public static class ExportValidator
             pages.Add(node);
             return;
         }
-        for (int i = 0; i < kids.Size(); i++) Descend(kids.GetAsDictionary(i), pages, seen, depth + 1);
+        for (int i = 0; i < kids.Count; i++) Descend(kids.GetAsDictionary(i), pages, seen, depth + 1);
     }
 
     private static void CheckPage(PdfDictionary page, int number, List<ValidationFinding> findings)
@@ -461,10 +449,11 @@ public static class ExportValidator
             return;
         }
 
-        if (box.Size() != 4 || box.ToDoubleArray().Any(v => double.IsNaN(v) || double.IsInfinity(v)))
+        string spelled = "[" + string.Join(" ", Enumerable.Range(0, box.Count).Select(i => box.Get(i)?.ToString() ?? "null")) + "]";
+        if (box.Count != 4 || Enumerable.Range(0, 4).Any(i => box.GetAsNumber(i) is null))
         {
             findings.Add(new ValidationFinding("PDF021", ValidationSeverity.Error, location,
-                $"The /MediaBox is not four finite numbers (it is {box}). The page rectangle "
+                $"The /MediaBox is not four finite numbers (it is {spelled}). The page rectangle "
                 + "cannot be computed."));
             return;
         }
@@ -474,7 +463,7 @@ public static class ExportValidator
         double height = Math.Abs(values[3] - values[1]);
         if (width <= 0 || height <= 0)
             findings.Add(new ValidationFinding("PDF021", ValidationSeverity.Error, location,
-                $"The /MediaBox {box} has zero area ({width} x {height} points), so the page has no "
+                $"The /MediaBox {spelled} has zero area ({width} x {height} points), so the page has no "
                 + "renderable surface. A rectangle was probably written with its corners in the "
                 + "wrong order or collapsed by a transform."));
     }
@@ -488,13 +477,12 @@ public static class ExportValidator
 
     private static void CheckStreamsDecode(PdfDocument document, List<ValidationFinding> findings)
     {
-        int count = document.GetNumberOfPdfObjects();
-        for (int number = 1; number < count; number++)
+        foreach (int number in document.ObjectNumbers.ToList())
         {
             PdfObject? candidate;
             try
             {
-                candidate = document.GetPdfObject(number);
+                candidate = document.GetObject(number);
             }
             catch (Exception ex)
             {
@@ -511,7 +499,7 @@ public static class ExportValidator
     private static void CheckStream(PdfStream stream, int number, List<ValidationFinding> findings)
     {
         string location = $"object {number} 0 R";
-        var filters = FilterNames(stream);
+        var filters = stream.FilterNames().ToList();
         var unknown = filters.Where(f => !KnownFilters.Contains(f)).ToList();
         if (unknown.Count > 0)
         {
@@ -526,13 +514,10 @@ public static class ExportValidator
         string reason;
         try
         {
-            // iText is deliberately forgiving: a filter that gives up returns null, or in the
-            // Flate case hands back the undecoded bytes, so neither an exception nor a non-null
-            // result proves the stream round-trips. Flate — what every export path here writes —
-            // is therefore inflated strictly, the way a non-iText viewer would.
-            reason = stream.GetBytes(true) is null ? "the filter chain produced no output" : "";
-            if (reason.Length == 0 && filters.FirstOrDefault() is "FlateDecode" or "Fl")
-                reason = InflateFailure(stream.GetBytes(false)) ?? "";
+            // The engine decodes strictly: truncated or corrupt data throws rather than coming
+            // back short, so a successful decode is proof the stream round-trips.
+            stream.GetDecodedBytes();
+            reason = "";
         }
         catch (Exception ex)
         {
@@ -541,89 +526,43 @@ public static class ExportValidator
         if (reason.Length == 0) return;
 
         findings.Add(new ValidationFinding("PDF030", ValidationSeverity.Error, location,
-            $"The stream ({chain}, {stream.GetLength()} bytes as written) does not decode: "
-            + $"{reason}. The data and the declared filter disagree — the bytes were written raw "
+            $"The stream ({chain}, {stream.RawData.Length} bytes as written) does not decode: "
+            + $"{reason} The data and the declared filter disagree — the bytes were written raw "
             + "under a compressed filter, or the encoded data was truncated."));
     }
-
-    /// <summary>
-    /// Inflates Flate data the strict way (zlib wrapper first, then bare deflate, which some
-    /// producers emit). Returns null when the data decompresses, or the reason it does not.
-    /// </summary>
-    private static string? InflateFailure(byte[]? data)
-    {
-        if (data is null || data.Length == 0) return null; // an empty stream is legal
-        if (TryInflate(data, zlib: true) || TryInflate(data, zlib: false)) return null;
-        return "the data is not valid Flate (zlib) compressed data";
-    }
-
-    private static bool TryInflate(byte[] data, bool zlib)
-    {
-        try
-        {
-            using var source = new MemoryStream(data);
-            using Stream decoder = zlib
-                ? new System.IO.Compression.ZLibStream(source, System.IO.Compression.CompressionMode.Decompress)
-                : new System.IO.Compression.DeflateStream(source, System.IO.Compression.CompressionMode.Decompress);
-            using var sink = new MemoryStream();
-            decoder.CopyTo(sink);
-            return true;
-        }
-        catch (InvalidDataException)
-        {
-            return false;
-        }
-    }
-
-    private static List<string> FilterNames(PdfStream stream) => stream.Get(PdfName.Filter) switch
-    {
-        PdfName single => new List<string> { single.GetValue() },
-        PdfArray many => many.OfType<PdfName>().Select(n => n.GetValue()).ToList(),
-        _ => new List<string>()
-    };
 
     // --------------------------------------------------------------- AcroForm invariants
 
     private static void CheckAcroForm(PdfDocument document, List<PdfDictionary> pages,
         List<ValidationFinding> findings)
     {
-        var form = PdfFormCreator.GetAcroForm(document, false);
+        var form = document.Catalog?.GetAsDictionary(PdfName.AcroForm);
         if (form is null) return;
 
-        bool needAppearances = form.GetPdfObject().GetAsBool(PdfName.NeedAppearances) == true;
-        var onPages = new HashSet<PdfIndirectReference>();
+        bool needAppearances = form.GetAsBool(PdfName.NeedAppearances) == true;
+        var onPages = new HashSet<PdfObject>(ReferenceEqualityComparer.Instance);
         foreach (var page in pages)
         {
             var annots = page.GetAsArray(PdfName.Annots);
             if (annots is null) continue;
-            for (int i = 0; i < annots.Size(); i++)
-            {
-                // Get(i, false) hands back the reference itself when the entry is indirect (the
-                // normal case); a directly embedded annotation dictionary carries its own.
-                var entry = annots.Get(i, false);
-                if ((entry as PdfIndirectReference ?? entry?.GetIndirectReference()) is { } reference)
-                    onPages.Add(reference);
-            }
+            foreach (var annot in annots) onPages.Add(annot);
         }
 
-        foreach (var entry in form.GetAllFormFields())
+        foreach (var field in AcroForm.TerminalFields(document))
         {
-            string name = entry.Key;
-            foreach (var widget in entry.Value.GetWidgets())
+            foreach (var widget in field.Widgets)
             {
-                var dictionary = widget.GetPdfObject();
-                if (!needAppearances && dictionary.GetAsDictionary(PdfName.AP)?.Get(PdfName.N) is null)
+                if (!needAppearances && widget.GetAsDictionary(PdfName.AP)?.Get(PdfName.N) is null)
                     findings.Add(new ValidationFinding("PDF040", ValidationSeverity.Warning,
-                        $"form field '{name}'",
+                        $"form field '{field.Name}'",
                         "The field's widget has no normal appearance stream (/AP /N) and the form "
                         + "does not set /NeedAppearances, so viewers that do not regenerate "
                         + "appearances (Chrome's built-in viewer among them) draw the field blank. "
                         + "Regenerate the appearance when writing the field value."));
 
-                var reference = dictionary.GetIndirectReference();
-                if (reference is not null && !onPages.Contains(reference))
+                if (widget.IsIndirect && !onPages.Contains(widget))
                     findings.Add(new ValidationFinding("PDF041", ValidationSeverity.Warning,
-                        $"form field '{name}'",
+                        $"form field '{field.Name}'",
                         "The field's widget annotation is not listed in any page's /Annots array, "
                         + "so the field exists in the AcroForm but is invisible and cannot be "
                         + "clicked. Add the widget to the page it belongs to."));

@@ -1,9 +1,8 @@
-using iText.Kernel.Pdf;
-using iText.Kernel.Utils;
+using PdfEditor.Core.Pdf;
 
 namespace PdfEditor.Core;
 
-/// <summary>Concatenates multiple PDF documents into one.</summary>
+/// <summary>Concatenates multiple PDF documents into one, bookmarks included.</summary>
 public static class Merger
 {
     public static byte[] Merge(IReadOnlyList<byte[]> pdfs, IReadOnlyList<string?>? passwords = null)
@@ -11,17 +10,18 @@ public static class Merger
         if (pdfs.Count == 0) throw new ArgumentException("At least one document is required.", nameof(pdfs));
         if (pdfs.Count == 1) return pdfs[0];
 
-        using var output = new MemoryStream();
-        using (var target = new PdfDocument(new PdfWriter(output)))
+        var target = PdfDocument.CreateNew();
+        var pages = new List<PdfDictionary>();
+        var outlines = new List<PdfImporter.OutlineItem>();
+        for (int i = 0; i < pdfs.Count; i++)
         {
-            var merger = new PdfMerger(target);
-            for (int i = 0; i < pdfs.Count; i++)
-            {
-                string? password = passwords != null && i < passwords.Count ? passwords[i] : null;
-                using var source = PdfIo.OpenReadOnly(pdfs[i], password);
-                merger.Merge(source, 1, source.GetNumberOfPages());
-            }
+            string? password = passwords != null && i < passwords.Count ? passwords[i] : null;
+            var source = PdfIo.OpenReadOnly(pdfs[i], password);
+            var numbers = Enumerable.Range(1, source.PageCount).ToList();
+            pages.AddRange(PdfIo.Guarded("copying pages", () => PdfImporter.CopyPages(source, numbers, target, outlines)));
         }
-        return output.ToArray();
+        target.SetPages(pages);
+        PdfImporter.LinkOutlines(target, outlines);
+        return PdfIo.Save(target);
     }
 }

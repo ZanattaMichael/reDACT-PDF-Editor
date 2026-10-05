@@ -1,4 +1,4 @@
-using iText.Kernel.Geom;
+using PdfEditor.Core.Pdf;
 
 namespace PdfEditor.Core;
 
@@ -114,23 +114,23 @@ public static class RedactionBox
     {
         if (mode == LengthObfuscation.None) return regions.ToList();
 
-        using var doc = PdfIo.OpenReadOnly(pdf, password);
-        int total = doc.GetNumberOfPages();
+        var doc = PdfIo.OpenReadOnly(pdf, password);
+        int total = doc.PageCount;
         var expanded = new List<RectRegion>(regions.Count);
         foreach (var r in regions)
         {
             if (r.Page < 1 || r.Page > total) { expanded.Add(r); continue; }
-            var crop = doc.GetPage(r.Page).GetCropBox();
+            var crop = doc.GetPage(r.Page).CropBox;
             expanded.Add(mode == LengthObfuscation.FullLine ? FullLine(r, crop) : Quantize(r, crop));
         }
         return expanded;
     }
 
     /// <summary>The box keeps its vertical band but spans the printable page width.</summary>
-    private static RectRegion FullLine(RectRegion r, Rectangle crop)
+    private static RectRegion FullLine(RectRegion r, PdfRect crop)
     {
-        float x = crop.GetLeft() + Margin;
-        float width = Math.Max(1f, crop.GetWidth() - 2 * Margin);
+        float x = crop.Left + Margin;
+        float width = Math.Max(1f, crop.Width - 2 * Margin);
         return new RectRegion(r.Page, x, r.Y, width, r.Height);
     }
 
@@ -140,9 +140,9 @@ public static class RedactionBox
     /// original left edge, and only slides left when a box near the right margin would otherwise run
     /// off the page (which previously clamped the width *below* the original, leaving text exposed).
     /// </summary>
-    private static RectRegion Quantize(RectRegion r, Rectangle crop)
+    private static RectRegion Quantize(RectRegion r, PdfRect crop)
     {
-        float left = crop.GetLeft(), right = crop.GetRight();
+        float left = crop.Left, right = crop.Right;
         float pageWidth = Math.Max(r.Width, right - left);
         // Quantizing r.Width + MinWiden rather than r.Width keeps the bucketing — widths within one
         // band still collapse onto a single value — while guaranteeing the box clears the text by at

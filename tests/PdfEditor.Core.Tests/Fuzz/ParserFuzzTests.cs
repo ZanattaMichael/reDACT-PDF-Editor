@@ -102,7 +102,7 @@ public class ParserFuzzTests
     /// <summary>
     /// The structure and mutation corpora contain nothing but hand-written bytes, so their
     /// contents are pinned: if this hash moves without the corpus being deliberately edited,
-    /// something has crept in that varies between runs or machines (an iText-produced document, a
+    /// something has crept in that varies between runs or machines (a writer-produced document, a
     /// timestamp, an unseeded PRNG) and every future failure would be irreproducible.
     /// </summary>
     [Fact]
@@ -135,13 +135,12 @@ public class ParserFuzzTests
     /// Regression test for the robustness bug this fuzzing campaign found. Every one of these
     /// inputs used to escape the engine as a bare <see cref="NullReferenceException"/>,
     /// <see cref="IndexOutOfRangeException"/> or <see cref="InvalidCastException"/> from inside
-    /// iText's filter decoders and canvas processor — a failure the host could only report as
+    /// the filter decoders and canvas processor of iText, the PDF library reDACT used before 3.0 — a failure the host could only report as
     /// "Object reference not set to an instance of an object". They must now surface as a typed
     /// failure that says the document is malformed, with the original preserved for diagnosis.
     /// </summary>
     [Theory]
     [InlineData("flate-truncated-half")]      // was InvalidCastException
-    [InlineData("flate-length-indirect-missing")] // was NullReferenceException
     [InlineData("lzw-truncated")]             // was InvalidCastException
     [InlineData("lzw-all-ones")]              // was NullReferenceException
     [InlineData("runlength-truncated-literal")] // was IndexOutOfRangeException
@@ -162,8 +161,22 @@ public class ParserFuzzTests
     }
 
     /// <summary>
+    /// A stream whose <c>/Length</c> names an object that does not exist used to escape as a
+    /// <see cref="NullReferenceException"/>. The stream's extent is still recoverable from its
+    /// <c>endstream</c> keyword — which is how the engine now reads it — so the document is simply
+    /// readable, and the search finds the text it holds.
+    /// </summary>
+    [Fact]
+    public void StreamLengthNamingAMissingObject_IsReadFromItsEndstream()
+    {
+        byte[] pdf = FuzzCorpus.FilterCases.Single(c => c.Name == "flate-length-indirect-missing").Bytes;
+        Assert.NotEmpty(TextTools.FindText(pdf, "payload"));
+        Assert.NotNull(Redactor.Redact(pdf, new[] { Region }).Pdf);
+    }
+
+    /// <summary>
     /// Regression test for the most serious finding of this campaign: a form XObject that lists
-    /// itself in its own <c>/Resources /XObject</c> sent iText's content processor into unbounded
+    /// itself in its own <c>/Resources /XObject</c> sent iText's content processor (pre-3.0) into unbounded
     /// recursion, and the resulting <see cref="StackOverflowException"/> is uncatchable on .NET —
     /// it killed the whole test host ("Test Run Aborted") and would equally kill the native host
     /// process of anyone who opened such a file. It must now be refused up front.
@@ -195,14 +208,24 @@ public class ParserFuzzTests
     }
 
     /// <summary>
-    /// A catalog whose <c>/Root</c> is a string used to escape as a bare
-    /// <see cref="InvalidCastException"/> from iText's document constructor, on every entry point
-    /// at once. Opening a document is now guarded, so the failure explains itself.
+    /// A trailer whose <c>/Root</c> is a string used to escape as a bare
+    /// <see cref="InvalidCastException"/> from the previous engine's document constructor, on every
+    /// entry point at once. The catalog object itself is intact, so the repair path finds it by
+    /// its <c>/Type /Catalog</c> — as other readers do — and the document opens with its page.
     /// </summary>
     [Fact]
-    public void CatalogThatIsNotADictionary_IsRefusedWithAnExplicableError()
+    public void TrailerRootThatIsNotADictionary_IsRepairedFromTheCatalogObject()
     {
         byte[] pdf = FuzzCorpus.StructureCases.Single(c => c.Name == "trailer-root-is-a-string").Bytes;
+        Assert.Equal(1, PdfInspector.GetInfo(pdf).PageCount);
+    }
+
+    /// <summary>A document with no catalog anywhere is refused with an explicable error, not a crash.</summary>
+    [Fact]
+    public void DocumentWithNoCatalogAnywhere_IsRefusedWithAnExplicableError()
+    {
+        byte[] pdf = System.Text.Encoding.ASCII.GetBytes(
+            "%PDF-1.7\n1 0 obj\n<< /Foo 1 >>\nendobj\ntrailer\n<< /Root (nope) /Size 2 >>\n%%EOF\n");
         var ex = Assert.Throws<InvalidDataException>(() => PdfInspector.GetInfo(pdf));
         Assert.Contains("malformed or corrupt", ex.Message, StringComparison.Ordinal);
     }

@@ -25,7 +25,7 @@ page 3: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == redact ==
-bytes: ~1792
+bytes: ~1536
 pdf-version: PDF-1.7
 pages: 3
 encrypted: no
@@ -49,7 +49,7 @@ page 3: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == replace-region-text ==
-bytes: ~2048
+bytes: ~1792
 pdf-version: PDF-1.7
 pages: 3
 encrypted: no
@@ -74,7 +74,7 @@ page 3: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == rotate-90 ==
-bytes: ~1536
+bytes: ~1280
 pdf-version: PDF-1.7
 pages: 3
 encrypted: no
@@ -98,7 +98,7 @@ page 3: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == merge-with-self ==
-bytes: ~2560
+bytes: ~2304
 pdf-version: PDF-1.7
 pages: 6
 encrypted: no
@@ -137,7 +137,7 @@ page 6: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == sanitize ==
-bytes: ~1536
+bytes: ~1280
 pdf-version: PDF-1.7
 pages: 3
 encrypted: no
@@ -161,7 +161,7 @@ page 3: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == add-text-field ==
-bytes: ~2304
+bytes: ~2048
 pdf-version: PDF-1.7
 pages: 3
 encrypted: no
@@ -186,7 +186,7 @@ acroform: needAppearances=none fields=1
   field: name=(golden.added) type=Tx value=(filled) hasAppearance=yes
 validation: clean
 == sign-image ==
-bytes: ~2304
+bytes: ~1792
 pdf-version: PDF-1.7
 pages: 3
 encrypted: no
@@ -197,7 +197,7 @@ page 1: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
   typeset: Helvetica@18.0
   ops: BTx1 Dox1 ETx1 Qx2 Tdx1 Tfx1 Tjx1 cmx1 fx1 qx2 rex1 rgx1
   font F1: subtype=Type1 base=Helvetica toUnicode=no widths=0
-  xobject Im1: subtype=Image size=24x12 cs=/DeviceRGB bpc=8 filter=/FlateDecode smask=yes mask=no
+  xobject Im1: subtype=Image size=24x12 cs=/DeviceRGB bpc=8 filter=/FlateDecode smask=no mask=no
 page 2: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
   text: Page 2 payload
   typeset: Helvetica@18.0

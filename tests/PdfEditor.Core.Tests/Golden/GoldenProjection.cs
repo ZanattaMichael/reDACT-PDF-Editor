@@ -1,9 +1,7 @@
 using System.Globalization;
 using System.Text;
-using iText.IO.Source;
-using iText.Kernel.Pdf;
-using iText.Kernel.Pdf.Canvas.Parser;
 using PdfEditor.Core;
+using PdfEditor.Core.Pdf;
 
 namespace PdfEditor.Tests.Golden;
 
@@ -11,14 +9,14 @@ namespace PdfEditor.Tests.Golden;
 /// Renders a PDF as a deterministic, human-readable summary — the thing the golden files actually
 /// hold.
 /// <para>
-/// <b>Why not compare bytes?</b> Because iText's output is not byte-reproducible. Every document
-/// it writes gets a <c>/ID</c> derived from the current time and an Info <c>/ModDate</c> stamped
-/// at save; two calls to the same helper with the same input in the same process already differ.
+/// <b>Why not compare bytes?</b> Because the writer's output is not byte-reproducible. Every
+/// document it writes gets an Info <c>/ModDate</c> stamped at save (and a new document a fresh
+/// random <c>/ID</c>); two calls to the same helper with the same input already differ.
 /// A byte-for-byte golden suite over this engine would be permanently flaky, and the usual
 /// response to a permanently flaky suite is to delete it or to regenerate the goldens on every
 /// red run — at which point it rubber-stamps regressions instead of catching them.
 /// (<see cref="GoldenSuiteSelfTests.RawBytes_AreNotReproducible_ButTheProjectionIs"/> pins that
-/// premise, so if iText ever becomes deterministic this comment is proven wrong rather than just
+/// premise, so if the writer ever becomes deterministic this comment is proven wrong rather than just
 /// going stale.)
 /// </para>
 /// <para>
@@ -47,11 +45,7 @@ internal static class GoldenProjection
 
         try
         {
-            using var reader = new PdfReader(new MemoryStream(pdf),
-                string.IsNullOrEmpty(password) ? new ReaderProperties()
-                    : new ReaderProperties().SetPassword(Encoding.UTF8.GetBytes(password)));
-            reader.SetUnethicalReading(true);
-            using var doc = new PdfDocument(reader);
+            var doc = PdfDocument.Open(pdf, string.IsNullOrEmpty(password) ? null : password);
             DescribeDocument(doc, report);
         }
         catch (Exception ex)
@@ -89,14 +83,14 @@ internal static class GoldenProjection
 
     private static void DescribeDocument(PdfDocument doc, StringBuilder report)
     {
-        report.Append("pdf-version: ").Append(doc.GetPdfVersion()).Append('\n');
-        report.Append("pages: ").Append(doc.GetNumberOfPages()).Append('\n');
-        report.Append("encrypted: ").Append(Yn(doc.GetReader().IsEncrypted())).Append('\n');
+        report.Append("pdf-version: PDF-").Append(doc.Version).Append('\n');
+        report.Append("pages: ").Append(doc.PageCount).Append('\n');
+        report.Append("encrypted: ").Append(Yn(doc.WasEncrypted)).Append('\n');
 
         DescribeInfo(doc, report);
         DescribeCatalog(doc, report);
 
-        for (int i = 1; i <= doc.GetNumberOfPages(); i++)
+        for (int i = 1; i <= doc.PageCount; i++)
             DescribePage(doc.GetPage(i), i, report);
 
         DescribeAcroForm(doc, report);
@@ -104,27 +98,27 @@ internal static class GoldenProjection
 
     /// <summary>
     /// The Info dictionary, with the two nondeterministic entries reduced to a yes/no. The
-    /// producer string is omitted entirely: it carries the iText version, so including it would
-    /// turn a dependency bump into a corpus-wide golden churn without telling anyone anything.
+    /// producer string is omitted entirely: it names whichever tool last wrote the file, so
+    /// including it would churn every golden whenever that changes without telling anyone anything.
     /// </summary>
     private static void DescribeInfo(PdfDocument doc, StringBuilder report)
     {
-        var info = doc.GetTrailer().GetAsDictionary(PdfName.Info);
+        var info = doc.Info;
         var parts = new List<string>();
         foreach (var key in new[] { PdfName.Title, PdfName.Author, PdfName.Subject, PdfName.Keywords })
         {
             string? value = info?.GetAsString(key)?.ToUnicodeString();
-            if (!string.IsNullOrEmpty(value)) parts.Add($"{key.GetValue()}={Normalise(value)}");
+            if (!string.IsNullOrEmpty(value)) parts.Add($"{key.Value}={Normalise(value)}");
         }
         parts.Add("has-CreationDate=" + Yn(info?.Get(PdfName.CreationDate) != null));
         parts.Add("has-ModDate=" + Yn(info?.Get(PdfName.ModDate) != null));
-        parts.Add("has-ID=" + Yn(doc.GetTrailer().Get(PdfName.ID) != null));
+        parts.Add("has-ID=" + Yn(doc.Trailer.Get(PdfName.ID) != null));
         report.Append("info: ").Append(string.Join(' ', parts)).Append('\n');
     }
 
     private static void DescribeCatalog(PdfDocument doc, StringBuilder report)
     {
-        var catalog = doc.GetCatalog().GetPdfObject();
+        var catalog = doc.Catalog ?? new PdfDictionary();
         var parts = new List<string>
         {
             "has-OpenAction=" + Yn(catalog.Get(PdfName.OpenAction) != null),
@@ -140,27 +134,20 @@ internal static class GoldenProjection
 
     private static void DescribePage(PdfPage page, int number, StringBuilder report)
     {
-        var dict = page.GetPdfObject();
+        var dict = page.Dictionary;
         report.Append("page ").Append(number.ToString(CultureInfo.InvariantCulture)).Append(": ")
-            .Append("media=").Append(Box(dict.GetAsArray(PdfName.MediaBox) ?? InheritedBox(page, PdfName.MediaBox)))
+            .Append("media=").Append(Box(page.GetInherited(PdfName.MediaBox) as PdfArray))
             .Append(" crop=").Append(Box(dict.GetAsArray(PdfName.CropBox)))
-            .Append(" rotate=").Append(page.GetRotation().ToString(CultureInfo.InvariantCulture))
-            .Append(" annots=").Append((dict.GetAsArray(PdfName.Annots)?.Size() ?? 0)
+            .Append(" rotate=").Append(page.Rotation.ToString(CultureInfo.InvariantCulture))
+            .Append(" annots=").Append((dict.GetAsArray(PdfName.Annots)?.Count ?? 0)
                 .ToString(CultureInfo.InvariantCulture))
             .Append(" group=").Append(Group(dict.GetAsDictionary(PdfName.Group)))
             .Append('\n');
 
-        report.Append("  text: ").Append(Safely(() => Normalise(PdfTextExtractor.GetTextFromPage(page)))).Append('\n');
+        report.Append("  text: ").Append(Safely(() => Normalise(LocationTextExtraction.ExtractPage(page)))).Append('\n');
         report.Append("  typeset: ").Append(Safely(() => Typeset(page))).Append('\n');
         report.Append("  ops: ").Append(Safely(() => Operators(page.GetContentBytes()))).Append('\n');
-        DescribeResources(page.GetResources().GetPdfObject(), "  ", 0, report);
-    }
-
-    private static PdfArray? InheritedBox(PdfPage page, PdfName name)
-    {
-        for (var dict = page.GetPdfObject(); dict != null; dict = dict.GetAsDictionary(PdfName.Parent))
-            if (dict.GetAsArray(name) is { } box) return box;
-        return null;
+        DescribeResources(page.Resources, "  ", 0, report);
     }
 
     // ------------------------------------------------------------------ resources
@@ -178,14 +165,14 @@ internal static class GoldenProjection
         foreach (var key in Sorted(xobjects))
         {
             var stream = xobjects.GetAsStream(key);
-            report.Append(indent).Append("xobject ").Append(key.GetValue()).Append(": ")
+            report.Append(indent).Append("xobject ").Append(key.Value).Append(": ")
                 .Append(stream == null ? "<not a stream>" : XObject(stream)).Append('\n');
 
             if (stream != null && PdfName.Form.Equals(stream.GetAsName(PdfName.Subtype))
                 && depth + 1 < MaxResourceDepth)
             {
                 report.Append(indent).Append("  ops: ")
-                    .Append(Safely(() => Operators(stream.GetBytes()))).Append('\n');
+                    .Append(Safely(() => Operators(stream.GetDecodedBytes()))).Append('\n');
                 DescribeResources(stream.GetAsDictionary(PdfName.Resources), indent + "  ", depth + 1, report);
             }
         }
@@ -199,7 +186,7 @@ internal static class GoldenProjection
         foreach (var key in Sorted(dict))
         {
             var entry = dict.GetAsDictionary(key);
-            report.Append(label).Append(' ').Append(key.GetValue()).Append(": ")
+            report.Append(label).Append(' ').Append(key.Value).Append(": ")
                 .Append(entry == null ? "<not a dictionary>" : describe(entry)).Append('\n');
         }
     }
@@ -213,17 +200,17 @@ internal static class GoldenProjection
         };
 
         var encoding = font.Get(PdfName.Encoding);
-        if (encoding is PdfName encodingName) parts.Add("encoding=" + encodingName.GetValue());
+        if (encoding is PdfName encodingName) parts.Add("encoding=" + encodingName.Value);
         else if (encoding is PdfDictionary encodingDict)
             parts.Add("encoding=" + Name(encodingDict.GetAsName(PdfName.BaseEncoding))
-                + "+Differences[" + (encodingDict.GetAsArray(PdfName.Differences)?.Size() ?? 0)
+                + "+Differences[" + (encodingDict.GetAsArray(PdfName.Differences)?.Count ?? 0)
                     .ToString(CultureInfo.InvariantCulture) + "]");
 
         parts.Add("toUnicode=" + Yn(font.Get(PdfName.ToUnicode) != null));
-        parts.Add("widths=" + (font.GetAsArray(PdfName.Widths)?.Size() ?? 0).ToString(CultureInfo.InvariantCulture));
+        parts.Add("widths=" + (font.GetAsArray(PdfName.Widths)?.Count ?? 0).ToString(CultureInfo.InvariantCulture));
 
         if (font.GetAsDictionary(PdfName.CharProcs) is { } procs)
-            parts.Add("charProcs=" + string.Join('/', Sorted(procs).Select(k => k.GetValue())));
+            parts.Add("charProcs=" + string.Join('/', Sorted(procs).Select(k => k.Value)));
         if (font.GetAsArray(PdfName.FontMatrix) is { } matrix)
             parts.Add("fontMatrix=" + Box(matrix));
         if (font.GetAsArray(PdfName.DescendantFonts)?.GetAsDictionary(0) is { } descendant)
@@ -244,7 +231,7 @@ internal static class GoldenProjection
         foreach (var key in Sorted(gs))
         {
             if (PdfName.Type.Equals(key)) continue;
-            parts.Add(key.GetValue() + "=" +
+            parts.Add(key.Value + "=" +
                 (PdfName.SMask.Equals(key) ? SoftMask(gs.Get(key)) : Value(gs.Get(key))));
         }
         return parts.Count == 0 ? "<empty>" : string.Join(' ', parts);
@@ -260,7 +247,7 @@ internal static class GoldenProjection
     private static string SoftMask(PdfObject? smask) => smask switch
     {
         null => "none",
-        PdfName name => "/" + name.GetValue(),
+        PdfName name => "/" + name.Value,
         PdfDictionary mask => Name(mask.GetAsName(PdfName.S))
             + "(G=" + (mask.GetAsStream(PdfName.G) is { } g
                 ? "form " + Group(g.GetAsDictionary(PdfName.Group)) : "missing")
@@ -304,15 +291,15 @@ internal static class GoldenProjection
 
     private static void DescribeAcroForm(PdfDocument doc, StringBuilder report)
     {
-        var acro = doc.GetCatalog().GetPdfObject().GetAsDictionary(PdfName.AcroForm);
+        var acro = doc.Catalog?.GetAsDictionary(PdfName.AcroForm);
         if (acro == null) { report.Append("acroform: none\n"); return; }
 
         var fields = acro.GetAsArray(PdfName.Fields);
         report.Append("acroform: needAppearances=").Append(Value(acro.Get(PdfName.NeedAppearances)))
-            .Append(" fields=").Append((fields?.Size() ?? 0).ToString(CultureInfo.InvariantCulture))
+            .Append(" fields=").Append((fields?.Count ?? 0).ToString(CultureInfo.InvariantCulture))
             .Append('\n');
 
-        for (int i = 0; fields != null && i < fields.Size(); i++)
+        for (int i = 0; fields != null && i < fields.Count; i++)
         {
             var field = fields.GetAsDictionary(i);
             if (field == null) { report.Append("  field: <not a dictionary>\n"); continue; }
@@ -364,40 +351,32 @@ internal static class GoldenProjection
     private static string Operators(byte[] content)
     {
         var counts = new SortedDictionary<string, int>(StringComparer.Ordinal);
-        var tokeniser = new PdfTokenizer(
-            new RandomAccessFileOrArray(new RandomAccessSourceFactory().CreateSource(content)));
-        while (tokeniser.NextToken())
-        {
-            if (tokeniser.GetTokenType() != PdfTokenizer.TokenType.Other) continue;
-            string op = tokeniser.GetStringValue();
-            counts[op] = counts.TryGetValue(op, out int n) ? n + 1 : 1;
-            // Inline images carry raw pixel bytes between ID and EI that are not tokens at all.
-            if (op == "BI") tokeniser.Seek(tokeniser.GetPosition());
-        }
+        foreach (var op in ContentParser.Parse(content))
+            counts[op.Operator] = counts.TryGetValue(op.Operator, out int n) ? n + 1 : 1;
         return counts.Count == 0 ? "<none>"
             : string.Join(' ', counts.Select(kv => kv.Key + "x" + kv.Value.ToString(CultureInfo.InvariantCulture)));
     }
 
     private static string Box(PdfArray? array) => array == null
         ? "none"
-        : "[" + string.Join(' ', Enumerable.Range(0, array.Size()).Select(i => Value(array.Get(i)))) + "]";
+        : "[" + string.Join(' ', Enumerable.Range(0, array.Count).Select(i => Value(array.Get(i)))) + "]";
 
-    private static string Name(PdfName? name) => name?.GetValue() ?? "none";
+    private static string Name(PdfName? name) => name?.Value ?? "none";
 
     private static string Value(PdfObject? obj) => obj switch
     {
         null => "none",
-        PdfNumber n => n.GetValue().ToString("0.####", CultureInfo.InvariantCulture),
-        PdfName n => "/" + n.GetValue(),
-        PdfBoolean b => b.GetValue() ? "true" : "false",
+        PdfNumber n => n.Value.ToString("0.####", CultureInfo.InvariantCulture),
+        PdfName n => "/" + n.Value,
+        PdfBoolean b => b.Value ? "true" : "false",
         PdfString s => "(" + Normalise(s.ToUnicodeString()) + ")",
         PdfArray a => Box(a),
-        PdfDictionary d => "<<" + string.Join(' ', Sorted(d).Select(k => "/" + k.GetValue())) + ">>",
+        PdfDictionary d => "<<" + string.Join(' ', Sorted(d).Select(k => "/" + k.Value)) + ">>",
         _ => obj.GetType().Name,
     };
 
     private static IEnumerable<PdfName> Sorted(PdfDictionary dict) =>
-        dict.KeySet().OrderBy(k => k.GetValue(), StringComparer.Ordinal);
+        dict.Keys.Where(k => dict.Get(k) != null).OrderBy(k => k.Value, StringComparer.Ordinal);
 
     private static string Yn(bool value) => value ? "yes" : "no";
 
@@ -443,33 +422,25 @@ internal static class GoldenProjection
     private static string Typeset(PdfPage page)
     {
         var listener = new TypesetListener();
-        new PdfCanvasProcessor(listener).ProcessPageContent(page);
+        new ContentProcessor(listener).ProcessPage(page);
         return listener.Runs.Count == 0 ? "<no text>" : string.Join(' ', listener.Runs);
     }
 
-    private sealed class TypesetListener : iText.Kernel.Pdf.Canvas.Parser.Listener.IEventListener
+    private sealed class TypesetListener : IContentListener
     {
         public SortedSet<string> Runs { get; } = new(StringComparer.Ordinal);
 
-        public void EventOccurred(iText.Kernel.Pdf.Canvas.Parser.Data.IEventData data, EventType type)
+        public void OnText(TextRenderInfo t)
         {
-            if (data is not iText.Kernel.Pdf.Canvas.Parser.Data.TextRenderInfo t
-                || string.IsNullOrWhiteSpace(t.GetText())) return;
+            if (string.IsNullOrWhiteSpace(t.Text)) return;
 
-            var m = t.GetTextMatrix();
-            float scale = (float)Math.Sqrt(Math.Abs(
-                m.Get(iText.Kernel.Geom.Matrix.I11) * m.Get(iText.Kernel.Geom.Matrix.I22)
-                - m.Get(iText.Kernel.Geom.Matrix.I12) * m.Get(iText.Kernel.Geom.Matrix.I21)));
-            float size = t.GetFontSize() * (scale == 0 ? 1 : scale);
-
-            string face;
-            try { face = t.GetFont()?.GetFontProgram()?.GetFontNames()?.GetFontName() ?? "<unnamed>"; }
-            catch (Exception ex) when (ex is not OutOfMemoryException) { face = "<unreadable>"; }
+            var m = t.TextToUser;
+            double scale = Math.Sqrt(Math.Abs(m.A * m.D - m.B * m.C));
+            double size = t.FontSize * (scale == 0 ? 1 : scale);
+            string face = string.IsNullOrEmpty(t.FontName) ? "<unnamed>" : t.FontName;
 
             Runs.Add(string.Create(CultureInfo.InvariantCulture, $"{face}@{size:F1}"));
         }
-
-        public ICollection<EventType>? GetSupportedEvents() => null;
     }
 
     private static string Safely(Func<string> describe)

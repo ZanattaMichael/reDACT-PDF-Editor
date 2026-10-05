@@ -29,7 +29,7 @@ public class ExportValidatorTests
     public static TheoryData<string, byte[]> CleanDocuments() => new()
     {
         { "hand-written raw", CorruptPdfs.WellFormed() },
-        { "itext text page", TestPdfs.WithText(("Hello world", 72, 700, 14)) },
+        { "engine text page", TestPdfs.WithText(("Hello world", 72, 700, 14)) },
         { "multi page", TestPdfs.MultiPage(3) },
         { "raster image", TestPdfs.WithImage(100, 400, 120, 80) },
         { "inline image", TestPdfs.WithInlineImage(100, 400, 120, 80) },
@@ -150,7 +150,7 @@ public class ExportValidatorTests
 
     [Fact]
     public void FlagsRootThatIsNotACatalog() =>
-        // iText stamps /Type /Catalog onto whatever /Root names while parsing, so this surfaces
+        // The reader takes whatever /Root names as the catalog, so this surfaces
         // as "the catalog has no page tree" — the finding says so, and points at trailer /Root.
         AssertFlags(CorruptPdfs.RootIsNotACatalog(), "PDF011", ValidationSeverity.Error);
 

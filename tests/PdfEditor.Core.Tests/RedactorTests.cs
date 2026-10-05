@@ -116,9 +116,7 @@ public class RedactorTests
 
         var result = Redactor.Redact(pdf, new[] { new RectRegion(1, 60, 640, 200, 40) });
 
-        using var doc = new iText.Kernel.Pdf.PdfDocument(
-            new iText.Kernel.Pdf.PdfReader(new MemoryStream(result.Pdf)));
-        Assert.Empty(doc.GetPage(1).GetAnnotations());
+        Assert.Empty(PdfEditor.Core.Pdf.PdfDocument.Open(result.Pdf).GetPage(1).GetAnnotations());
     }
 
     [Fact]
@@ -148,8 +146,8 @@ public class RedactorTests
         var match = Assert.Single(TextTools.FindText(pdf, "SECRET"));
         float cy = match.Y + match.Height / 2;
 
-        // The word really renders where iText reports it: some pixel along that band is dark
-        // (before redaction), proving iText's coordinates agree with what PDFium renders.
+        // The word really renders where the engine reports it: some pixel along that band is dark
+        // (before redaction), proving the engine's coordinates agree with what PDFium renders.
         bool textRendersHere = false;
         for (float dx = 1; dx < match.Width && !textRendersHere; dx += 1)
             if (TestPdfAssert.PixelAt(pdf, 1, match.X + dx, cy, 150).Red < 128) textRendersHere = true;

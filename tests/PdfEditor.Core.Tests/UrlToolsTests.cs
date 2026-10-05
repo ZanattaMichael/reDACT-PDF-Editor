@@ -60,18 +60,26 @@ public class UrlExtractionTests
     /// <summary>A page with one URI link and one JavaScript-action link annotation.</summary>
     private static byte[] WithLinks()
     {
-        using var output = new MemoryStream();
-        using (var doc = new iText.Kernel.Pdf.PdfDocument(new iText.Kernel.Pdf.PdfWriter(output)))
-        {
-            var page = doc.AddNewPage(new iText.Kernel.Geom.PageSize(595, 842));
-            var uri = new iText.Kernel.Pdf.Annot.PdfLinkAnnotation(new iText.Kernel.Geom.Rectangle(72, 700, 200, 20));
-            uri.SetAction(iText.Kernel.Pdf.Action.PdfAction.CreateURI("https://example.com"));
-            page.AddAnnotation(uri);
-            var js = new iText.Kernel.Pdf.Annot.PdfLinkAnnotation(new iText.Kernel.Geom.Rectangle(72, 660, 200, 20));
-            js.SetAction(iText.Kernel.Pdf.Action.PdfAction.CreateJavaScript("window.close();"));
-            page.AddAnnotation(js);
-        }
-        return output.ToArray();
+        var doc = PdfEditor.Core.Pdf.PdfDocument.CreateNew();
+        var page = doc.AddNewPage(595, 842);
+        page.AddAnnotation(Link(72, 700, "URI", PdfEditor.Core.Pdf.PdfName.URI,
+            new PdfEditor.Core.Pdf.PdfString(System.Text.Encoding.ASCII.GetBytes("https://example.com"))));
+        page.AddAnnotation(Link(72, 660, "JavaScript", PdfEditor.Core.Pdf.PdfName.JS,
+            PdfEditor.Core.Pdf.PdfString.FromText("window.close();")));
+        return doc.Save();
+    }
+
+    private static PdfEditor.Core.Pdf.PdfDictionary Link(float x, float y, string kind,
+        PdfEditor.Core.Pdf.PdfName key, PdfEditor.Core.Pdf.PdfObject value)
+    {
+        var action = new PdfEditor.Core.Pdf.PdfDictionary();
+        action.Put(PdfEditor.Core.Pdf.PdfName.S, PdfEditor.Core.Pdf.PdfName.Of(kind));
+        action.Put(key, value);
+        var link = new PdfEditor.Core.Pdf.PdfDictionary();
+        link.Put(PdfEditor.Core.Pdf.PdfName.Subtype, PdfEditor.Core.Pdf.PdfName.Link);
+        link.Put(PdfEditor.Core.Pdf.PdfName.Rect, new PdfEditor.Core.Pdf.PdfRect(x, y, 200, 20).ToArray());
+        link.Put(PdfEditor.Core.Pdf.PdfName.A, action);
+        return link;
     }
 }
 

@@ -1,7 +1,8 @@
 name: Release Candidate
 
 # Every merge to main creates a release candidate: a tag "vX.Y.Z-<build>" (patch-bumped
-# from the latest *final* release tag, ignoring other RC tags), a packaged extension zip,
+# from the latest *final* release tag, ignoring other RC tags -- or, when manifest.json has been
+# raised above that release for a major/minor version, that version; scripts/next-version.sh), a packaged extension zip,
 # self-contained native-host builds for each desktop platform (Windows, Linux, macOS
 # Intel + Apple Silicon), OS-native host installers (a Linux .deb and a Windows .msi),
 # and a GitHub prerelease with all of those attached as assets.
@@ -56,20 +57,17 @@ jobs:
         run: |
           # Only a clean "vX.Y.Z" counts as a previous *final* release -- RC tags
           # ("vX.Y.Z-<build>") must never feed back into the version calculation.
-          previous_tag=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
-          if [[ -n "$previous_tag" ]]; then
-            base_version="${previous_tag#v}"
-          else
-            base_version=$(python3 -c "import json; print(json.load(open('extension/manifest.json'))['version'])")
-          fi
-          IFS='.' read -r major minor patch <<< "$base_version"
-          next_version="${major}.${minor}.$((patch + 1))"
+          previous_tag=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+          manifest_base=$(python3 -c "import json; print(json.load(open('extension/manifest.json'))['version'])")
+          # Patch-bumped from the last final release, unless manifest.json was deliberately
+          # raised above it for a major/minor release (see scripts/next-version.sh).
+          next_version=$(./scripts/next-version.sh "$previous_tag" "$manifest_base")
           rc_tag="v${next_version}-${{ github.run_number }}"
           # Chrome manifest versions allow up to four integer parts, so the build number
           # becomes a fourth part (tag v1.0.1-57 -> manifest/package version 1.0.1.57).
           manifest_version="${next_version}.${{ github.run_number }}"
 
-          echo "Previous final release tag: ${previous_tag:-(none found; used the version in manifest.json as the base)}"
+          echo "Previous final release tag: ${previous_tag:-(none found; used the version in manifest.json as the base)}; manifest.json: $manifest_base"
           echo "Next release candidate: $rc_tag (would promote to v${next_version})"
           echo "tag=$rc_tag" >> "$GITHUB_OUTPUT"
           echo "final_tag=v${next_version}" >> "$GITHUB_OUTPUT"

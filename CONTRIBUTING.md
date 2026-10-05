@@ -55,7 +55,7 @@ Re-run either bootstrap script any time — both are idempotent.
 
 ```
 extension/                         Chromium MV3 extension (UI)
-src/PdfEditor.Core/                PDF engine (iText 9 + PDFium rendering)
+src/PdfEditor.Core/                PDF engine (in-house, see src/PdfEditor.Core/Pdf/) + PDFium rendering
 src/PdfEditor.NativeHost/          native messaging host executable
 tests/PdfEditor.Core.Tests/        unit tests for the PDF engine
 tests/PdfEditor.NativeHost.Tests/  unit tests for the JSON dispatcher (in-process)
@@ -125,8 +125,8 @@ groups, malformed streams) through every export operation and compares the resul
 against a recording in `Golden/goldens/*.txt`. It runs as part of `dotnet test`; no
 extra setup.
 
-The recordings are **not** raw PDF bytes. iText stamps a timestamp-derived `/ID` and
-`/ModDate` into everything it writes, so the same operation on the same input produces
+The recordings are **not** raw PDF bytes. The writer stamps a `/ModDate` (and, for a new
+document, a random `/ID`) into everything it writes, so the same operation on the same input produces
 different bytes every time; the goldens hold a *semantic projection* instead — page
 geometry, extracted text, the font/XObject/graphics-state inventory, an operator census
 per content stream, and the `ExportValidator` findings.

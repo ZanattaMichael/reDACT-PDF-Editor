@@ -10,6 +10,10 @@ _Generated 2026-07-28. Source: 40 open issues (#17–#56) on `zanattamichael/chr
 
 ## Progress
 
+**3.0.0 decoupled reDACT from iText (#170).** The in-house engine in `src/PdfEditor.Core/Pdf/`
+replaces iText and BouncyCastle, which settles #115, #116, #126 and #127. See
+`docs/RELEASE_NOTES_3.0.0.md` for the user-visible differences.
+
 **Tier 0 is complete.** #18 + #22 (PR #59), #20 + #21 (PR #68), #24 (PR #67) are all merged.
 
 **Tier 2 is in flight:** #52 (PR #75) and #54 (PR #76) are open for review; #53 is

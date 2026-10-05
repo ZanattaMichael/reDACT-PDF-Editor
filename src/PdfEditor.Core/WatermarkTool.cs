@@ -1,8 +1,5 @@
-using iText.Kernel.Colors;
-using iText.Kernel.Font;
-using iText.Kernel.Geom;
-using iText.Kernel.Pdf;
-using iText.Kernel.Pdf.Extgstate;
+using PdfEditor.Core.Pdf;
+using PdfEditor.Core.Pdf.Fonts;
 
 namespace PdfEditor.Core;
 
@@ -15,7 +12,7 @@ namespace PdfEditor.Core;
 public static class WatermarkTool
 {
     // A neutral mid-grey when no colour is given: visible over white, unobtrusive over text.
-    private static readonly DeviceRgb DefaultColour = new(128, 128, 128);
+    private static readonly PdfColor DefaultColour = PdfColor.Rgb(128, 128, 128);
 
     /// <summary>
     /// Draws <paramref name="text"/> centred on and rotated across each target page, styled per
@@ -29,56 +26,63 @@ public static class WatermarkTool
 
         var o = options ?? new WatermarkOptions();
         float opacity = Math.Clamp(o.Opacity, 0.05f, 1f);
-        var colour = (TextTools.ParseColor(o.ColorHex) as DeviceRgb) ?? DefaultColour;
-        var font = PdfFontFactory.CreateFont(TextTools.ResolveFont(o.FontFamily, o.Bold, o.Italic));
+        var colour = TextTools.ParseColor(o.ColorHex) ?? DefaultColour;
+        string fontName = TextTools.ResolveFont(o.FontFamily, o.Bold, o.Italic);
+        var font = PdfFont.Standard(fontName);
         double theta = o.RotationDegrees * Math.PI / 180.0;
         float cos = (float)Math.Cos(theta), sin = (float)Math.Sin(theta);
 
-        using var output = new MemoryStream();
-        using (var doc = PdfIo.Open(pdf, output, password))
+        var doc = PdfIo.Open(pdf, password);
+        var target = NormalizePages(o.Pages, doc.PageCount);
+        // One extended graphics state, shared across pages: it only carries the fill opacity.
+        var gs = new PdfDictionary();
+        gs.Put(PdfName.Type, PdfName.ExtGState);
+        gs.Put(PdfName.ca, new PdfNumber(opacity));
+        doc.MakeIndirect(gs);
+        // One font dictionary too, shared the same way.
+        var fontDict = doc.MakeIndirect(font.Dictionary!);
+
+        foreach (int pageNum in target)
         {
-            var target = NormalizePages(o.Pages, doc.GetNumberOfPages());
-            // One extended graphics state, shared across pages: it only carries the fill opacity.
-            var gs = new PdfExtGState().SetFillOpacity(opacity);
+            var page = doc.GetPage(pageNum);
+            var box = page.MediaBox;
+            float cx = (box.Left + box.Right) / 2f;
+            float cy = (box.Bottom + box.Top) / 2f;
 
-            foreach (int pageNum in target)
-            {
-                var page = doc.GetPage(pageNum);
-                var box = page.GetPageSize();
-                float cx = (box.GetLeft() + box.GetRight()) / 2f;
-                float cy = (box.GetBottom() + box.GetTop()) / 2f;
+            float fs = o.FontSize ?? FitFontSize(font, text, box);
+            float halfW = (float)font.MeasureText(text, fs) / 2f;
+            float halfH = fs * 0.35f; // roughly half a cap height, to centre the line vertically
 
-                float fs = o.FontSize ?? FitFontSize(font, text, box);
-                float halfW = font.GetWidth(text, fs) / 2f;
-                float halfH = fs * 0.35f; // roughly half a cap height, to centre the line vertically
+            // Place the baseline start so the text's midpoint lands on the page centre once the
+            // rotation is applied. Tm = [cos sin -sin cos startX startY]; solving for the start
+            // that maps text-space (halfW, halfH) to (cx, cy):
+            float startX = cx - (cos * halfW - sin * halfH);
+            float startY = cy - (sin * halfW + cos * halfH);
 
-                // Place the baseline start so the text's midpoint lands on the page centre once the
-                // rotation is applied. Tm = [cos sin -sin cos startX startY]; solving for the start
-                // that maps text-space (halfW, halfH) to (cx, cy):
-                float startX = cx - (cos * halfW - sin * halfH);
-                float startY = cy - (sin * halfW + cos * halfH);
-
-                // Default user space (via PdfContentGuard) so a leftover page transform can't shift
-                // or rescale the mark; save/restore so the opacity state does not leak into anything
-                // drawn afterwards.
-                var canvas = PdfContentGuard.InDefaultUserSpace(page, doc);
-                canvas.SaveState();
-                canvas.SetExtGState(gs).SetFillColor(colour);
-                canvas.BeginText().SetFontAndSize(font, fs)
-                    .SetTextMatrix(cos, sin, -sin, cos, startX, startY)
-                    .ShowText(text)
-                    .EndText();
-                canvas.RestoreState();
-            }
+            // Default user space (via PdfContentGuard) so a leftover page transform can't shift
+            // or rescale the mark; save/restore so the opacity state does not leak into anything
+            // drawn afterwards.
+            var resources = page.GetOrCreateResources();
+            var gsName = PdfResources.Add(resources, PdfName.ExtGState, "Gs", gs);
+            var fName = PdfResources.Add(resources, PdfName.Font, "F", fontDict);
+            var canvas = new ContentBuilder()
+                .SaveState()
+                .GraphicsState(gsName).FillColor(colour)
+                .BeginText().Font(fName, fs)
+                .TextMatrix(cos, sin, -sin, cos, startX, startY)
+                .ShowText(font.Encode(text))
+                .EndText()
+                .RestoreState();
+            PdfContentGuard.DrawInDefaultUserSpace(page, canvas.ToArray());
         }
-        return EditResult.Of(output.ToArray());
+        return EditResult.Of(PdfIo.Save(doc));
     }
 
     /// <summary>Sizes the text so it spans ~80% of the page diagonal, clamped to a sane range.</summary>
-    private static float FitFontSize(PdfFont font, string text, Rectangle box)
+    private static float FitFontSize(PdfFont font, string text, PdfRect box)
     {
-        float widthAt1 = Math.Max(0.001f, font.GetWidth(text, 1f));
-        float diagonal = (float)Math.Sqrt(box.GetWidth() * box.GetWidth() + box.GetHeight() * box.GetHeight());
+        float widthAt1 = Math.Max(0.001f, (float)font.MeasureText(text, 1f));
+        float diagonal = (float)Math.Sqrt(box.Width * box.Width + box.Height * box.Height);
         return Math.Clamp(diagonal * 0.8f / widthAt1, 8f, 200f);
     }
 
