@@ -498,8 +498,8 @@ internal static class PdfResources
     /// </summary>
     public static PdfName AddEntry(PdfDictionary entries, string prefix, PdfObject value)
     {
-        foreach (var key in entries.Keys)
-            if (ReferenceEquals(entries.Get(key), value)) return key;
+        if (entries.Keys.FirstOrDefault(key => ReferenceEquals(entries.Get(key), value)) is { } existing)
+            return existing;
         int i = 1;
         while (entries.ContainsKey(PdfName.Of(prefix + i.ToString(CultureInfo.InvariantCulture)))) i++;
         var name = PdfName.Of(prefix + i.ToString(CultureInfo.InvariantCulture));
