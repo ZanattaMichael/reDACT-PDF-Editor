@@ -131,9 +131,6 @@ internal static class PdfFilters
             _out = new byte[(int)Math.Clamp((long)input.Length * 4, 256, max)];
         }
 
-        /// <summary>Thrown internally when the input runs out; turns into an incomplete result.</summary>
-        public sealed class EndOfInputException : Exception { }
-
         public static Result Run(byte[] input, int max)
         {
             int start = 0;
@@ -157,19 +154,15 @@ internal static class PdfFilters
                 } while (!final);
                 return new Result(inflater.Output(), true, null);
             }
-            catch (EndOfInputException)
+            catch (EndOfStreamException)
             {
+                // The input ran out: what was inflated so far is the (incomplete) result.
                 return new Result(inflater.Output(), false, null);
             }
-            catch (CorruptDataException e)
+            catch (InvalidDataException e)
             {
                 return inflater.Fail(e.Message);
             }
-        }
-
-        public sealed class CorruptDataException : Exception
-        {
-            public CorruptDataException(string message) : base(message) { }
         }
 
         private Result Fail(string message) => new(Output(), false, message);
@@ -180,7 +173,7 @@ internal static class PdfFilters
         {
             while (_bitCount < need)
             {
-                if (_pos >= _in.Length) throw new EndOfInputException();
+                if (_pos >= _in.Length) throw new EndOfStreamException();
                 _bitBuf |= (uint)_in[_pos++] << _bitCount;
                 _bitCount += 8;
             }
@@ -200,7 +193,7 @@ internal static class PdfFilters
         {
             long wanted = (long)_outLen + extra;
             if (wanted > _max)
-                throw new CorruptDataException($"The Flate data expands past {_max / (1024 * 1024)} MiB: it is a decompression bomb, not page content.");
+                throw new InvalidDataException($"The Flate data expands past {_max / (1024 * 1024)} MiB: it is a decompression bomb, not page content.");
             long size = Math.Max(wanted, Math.Min((long)_max, (long)_out.Length * 2));
             Array.Resize(ref _out, (int)size);
         }
@@ -212,11 +205,11 @@ internal static class PdfFilters
             _pos -= _bitCount >> 3;
             _bitBuf = 0;
             _bitCount = 0;
-            if (_pos + 4 > _in.Length) throw new EndOfInputException();
+            if (_pos + 4 > _in.Length) throw new EndOfStreamException();
             int len = _in[_pos] | _in[_pos + 1] << 8;
             int nlen = _in[_pos + 2] | _in[_pos + 3] << 8;
             _pos += 4;
-            if (len != (~nlen & 0xFFFF)) throw new CorruptDataException("A stored Flate block's length check does not match: the data is corrupt.");
+            if (len != (~nlen & 0xFFFF)) throw new InvalidDataException("A stored Flate block's length check does not match: the data is corrupt.");
             if (_pos + len > _in.Length)
             {
                 int available = _in.Length - _pos;
@@ -224,7 +217,7 @@ internal static class PdfFilters
                 Array.Copy(_in, _pos, _out, _outLen, available);
                 _outLen += available;
                 _pos = _in.Length;
-                throw new EndOfInputException();
+                throw new EndOfStreamException();
             }
             if (_outLen + len > _out.Length) Grow(len);
             Array.Copy(_in, _pos, _out, _outLen, len);
@@ -244,12 +237,12 @@ internal static class PdfFilters
                 }
                 if (symbol == 256) return;
                 symbol -= 257;
-                if (symbol >= 29) throw new CorruptDataException("The Flate data contains an invalid length code: it is corrupt.");
+                if (symbol >= 29) throw new InvalidDataException("The Flate data contains an invalid length code: it is corrupt.");
                 int length = LengthBase[symbol] + Bits(LengthExtra[symbol]);
                 int ds = DecodeSymbol(dist);
-                if (ds >= 30) throw new CorruptDataException("The Flate data contains an invalid distance code: it is corrupt.");
+                if (ds >= 30) throw new InvalidDataException("The Flate data contains an invalid distance code: it is corrupt.");
                 int distance = DistBase[ds] + Bits(DistExtra[ds]);
-                if (distance > _outLen) throw new CorruptDataException("The Flate data refers back past its own start: it is corrupt.");
+                if (distance > _outLen) throw new InvalidDataException("The Flate data refers back past its own start: it is corrupt.");
                 if (_outLen + length > _out.Length) Grow(length);
                 CopyBack(distance, length);
             }
@@ -286,14 +279,25 @@ internal static class PdfFilters
             int nlen = Bits(5) + 257;
             int ndist = Bits(5) + 1;
             int ncode = Bits(4) + 4;
-            if (nlen > 286 || ndist > 30) throw new CorruptDataException("The Flate data declares too many codes: it is corrupt.");
+            if (nlen > 286 || ndist > 30) throw new InvalidDataException("The Flate data declares too many codes: it is corrupt.");
             var lengths = new int[320];
             for (int i = 0; i < ncode; i++) lengths[CodeLengthOrder[i]] = Bits(3);
             var lencode = Huffman.Build(lengths, 0, 19)
-                ?? throw new CorruptDataException("The Flate data's code-length table is invalid: it is corrupt.");
+                ?? throw new InvalidDataException("The Flate data's code-length table is invalid: it is corrupt.");
 
+            ReadCodeLengths(lencode, lengths, nlen + ndist);
+            if (lengths[256] == 0) throw new InvalidDataException("The Flate data has no end-of-block code: it is corrupt.");
+
+            var lit = Huffman.Build(lengths, 0, nlen) ?? throw new InvalidDataException("The Flate data's literal table is invalid: it is corrupt.");
+            var dist = Huffman.Build(lengths, nlen, ndist) ?? throw new InvalidDataException("The Flate data's distance table is invalid: it is corrupt.");
+            Codes(lit, dist);
+        }
+
+        /// <summary>Decodes the literal and distance code lengths, which are themselves run-length coded.</summary>
+        private void ReadCodeLengths(Huffman lencode, int[] lengths, int total)
+        {
             int index = 0;
-            while (index < nlen + ndist)
+            while (index < total)
             {
                 int symbol = DecodeSymbol(lencode);
                 if (symbol < 16)
@@ -304,20 +308,15 @@ internal static class PdfFilters
                 int repeat, value = 0;
                 if (symbol == 16)
                 {
-                    if (index == 0) throw new CorruptDataException("The Flate data repeats a code length before any was given: it is corrupt.");
+                    if (index == 0) throw new InvalidDataException("The Flate data repeats a code length before any was given: it is corrupt.");
                     value = lengths[index - 1];
                     repeat = 3 + Bits(2);
                 }
                 else if (symbol == 17) repeat = 3 + Bits(3);
                 else repeat = 11 + Bits(7);
-                if (index + repeat > nlen + ndist) throw new CorruptDataException("The Flate data's code lengths overrun their table: it is corrupt.");
+                if (index + repeat > total) throw new InvalidDataException("The Flate data's code lengths overrun their table: it is corrupt.");
                 while (repeat-- > 0) lengths[index++] = value;
             }
-            if (lengths[256] == 0) throw new CorruptDataException("The Flate data has no end-of-block code: it is corrupt.");
-
-            var lit = Huffman.Build(lengths, 0, nlen) ?? throw new CorruptDataException("The Flate data's literal table is invalid: it is corrupt.");
-            var dist = Huffman.Build(lengths, nlen, ndist) ?? throw new CorruptDataException("The Flate data's distance table is invalid: it is corrupt.");
-            Codes(lit, dist);
         }
 
         private int DecodeSymbol(Huffman h)
@@ -351,7 +350,7 @@ internal static class PdfFilters
                 first <<= 1;
                 code <<= 1;
             }
-            throw new CorruptDataException("The Flate data contains a code that is not in its table: it is corrupt.");
+            throw new InvalidDataException("The Flate data contains a code that is not in its table: it is corrupt.");
         }
 
         private static Huffman BuildFixedLit()
@@ -400,27 +399,33 @@ internal static class PdfFilters
                 h.Symbol = new int[n];
                 for (int i = 0; i < n; i++)
                     if (lengths[offset + i] != 0) h.Symbol[offs[lengths[offset + i]]++] = i;
+                h.FillFastTable();
+                return h;
+            }
 
-                // Fast table: for every code of length <= FastBits, fill all entries whose low bits
-                // (in the reversed, LSB-first order the bit reader yields) match the code.
-                Array.Fill(h.Fast, -1);
+            /// <summary>
+            /// For every code of length &lt;= FastBits, fills all entries whose low bits (in the
+            /// reversed, LSB-first order the bit reader yields) match the code.
+            /// </summary>
+            private void FillFastTable()
+            {
+                Array.Fill(Fast, -1);
                 int code = 0, symIndex = 0;
                 for (int len = 1; len <= 15; len++)
                 {
-                    for (int k = 0; k < h.Count[len]; k++)
+                    for (int k = 0; k < Count[len]; k++)
                     {
                         if (len <= FastBits)
                         {
                             int reversed = Reverse(code, len);
-                            int entry = len << 16 | h.Symbol[symIndex];
-                            for (int fill = reversed; fill < (1 << FastBits); fill += 1 << len) h.Fast[fill] = entry;
+                            int entry = len << 16 | Symbol[symIndex];
+                            for (int fill = reversed; fill < (1 << FastBits); fill += 1 << len) Fast[fill] = entry;
                         }
                         code++;
                         symIndex++;
                     }
                     code <<= 1;
                 }
-                return h;
             }
 
             private static int Reverse(int code, int len)
@@ -452,7 +457,11 @@ internal static class PdfFilters
 
         if (predictor == 2) return TiffPredictor(data, colors, bpc, rowBytes);
         if (predictor < 10) return data; // unknown predictor: leave the data alone
+        return PngPredictor(data, rowBytes, bytesPerPixel);
+    }
 
+    private static byte[] PngPredictor(byte[] data, int rowBytes, int bytesPerPixel)
+    {
         var output = new MemoryStream(data.Length);
         var prior = new byte[rowBytes];
         var row = new byte[rowBytes];
@@ -464,24 +473,30 @@ internal static class PdfFilters
             Array.Clear(row);
             Array.Copy(data, pos, row, 0, n);
             pos += n;
-            for (int i = 0; i < rowBytes; i++)
-            {
-                int left = i >= bytesPerPixel ? row[i - bytesPerPixel] : 0;
-                int up = prior[i];
-                int upLeft = i >= bytesPerPixel ? prior[i - bytesPerPixel] : 0;
-                row[i] = type switch
-                {
-                    1 => (byte)(row[i] + left),
-                    2 => (byte)(row[i] + up),
-                    3 => (byte)(row[i] + (left + up) / 2),
-                    4 => (byte)(row[i] + Paeth(left, up, upLeft)),
-                    _ => row[i], // 0 = none; unknown types are left as they are
-                };
-            }
+            UnfilterRow(type, row, prior, bytesPerPixel);
             output.Write(row, 0, n);
             (prior, row) = (row, prior);
         }
         return output.ToArray();
+    }
+
+    /// <summary>Undoes one PNG row filter in place, against the previous (already unfiltered) row.</summary>
+    private static void UnfilterRow(int type, byte[] row, byte[] prior, int bytesPerPixel)
+    {
+        for (int i = 0; i < row.Length; i++)
+        {
+            int left = i >= bytesPerPixel ? row[i - bytesPerPixel] : 0;
+            int up = prior[i];
+            int upLeft = i >= bytesPerPixel ? prior[i - bytesPerPixel] : 0;
+            row[i] = type switch
+            {
+                1 => (byte)(row[i] + left),
+                2 => (byte)(row[i] + up),
+                3 => (byte)(row[i] + (left + up) / 2),
+                4 => (byte)(row[i] + Paeth(left, up, upLeft)),
+                _ => row[i], // 0 = none; unknown types are left as they are
+            };
+        }
     }
 
     private static int Paeth(int a, int b, int c)
@@ -510,14 +525,7 @@ internal static class PdfFilters
     {
         var output = new MemoryStream(data.Length * 3);
         var table = new List<byte[]>(4096);
-        void Reset()
-        {
-            table.Clear();
-            for (int i = 0; i < 256; i++) table.Add(new[] { (byte)i });
-            table.Add(Array.Empty<byte>()); // 256: clear
-            table.Add(Array.Empty<byte>()); // 257: end of data
-        }
-        Reset();
+        ResetLzwTable(table);
 
         int codeLength = 9;
         long bitPos = 0;
@@ -527,50 +535,67 @@ internal static class PdfFilters
         {
             if (bitPos + codeLength > totalBits)
                 throw new PdfFormatException("The LZW data ends without an end-of-data code: the stream is truncated.");
-            int code = 0;
-            for (int i = 0; i < codeLength; i++, bitPos++)
-                code = code << 1 | (data[bitPos >> 3] >> (7 - (int)(bitPos & 7)) & 1);
+            int code = ReadLzwCode(data, ref bitPos, codeLength);
 
             if (code == 256)
             {
-                Reset();
+                ResetLzwTable(table);
                 codeLength = 9;
                 previous = null;
                 continue;
             }
             if (code == 257) break;
 
-            byte[] entry;
-            if (code < table.Count && code != 256 && code != 257)
-            {
-                entry = table[code];
-            }
-            else if (code == table.Count && previous != null)
-            {
-                entry = new byte[previous.Length + 1];
-                previous.CopyTo(entry, 0);
-                entry[^1] = previous[0];
-            }
-            else
-            {
-                throw new PdfFormatException($"The LZW data contains the code {code}, which is not in its table: the stream is corrupt.");
-            }
-
+            byte[] entry = LzwEntry(table, code, previous);
             output.Write(entry);
             if (output.Length > MaxDecodedBytes)
                 throw new PdfFormatException("The LZW data expands past the decode limit: it is a decompression bomb, not page content.");
-            if (previous != null && table.Count < 4096)
-            {
-                var added = new byte[previous.Length + 1];
-                previous.CopyTo(added, 0);
-                added[^1] = entry[0];
-                table.Add(added);
-            }
+            if (previous != null && table.Count < 4096) table.Add(Append(previous, entry[0]));
             previous = entry;
-            int next = table.Count + (earlyChange == 0 ? 0 : 1);
-            codeLength = next >= 2048 ? 12 : next >= 1024 ? 11 : next >= 512 ? 10 : 9;
+            codeLength = LzwCodeLength(table.Count, earlyChange);
         }
         return output.ToArray();
+    }
+
+    private static void ResetLzwTable(List<byte[]> table)
+    {
+        table.Clear();
+        for (int i = 0; i < 256; i++) table.Add(new[] { (byte)i });
+        table.Add(Array.Empty<byte>()); // 256: clear
+        table.Add(Array.Empty<byte>()); // 257: end of data
+    }
+
+    private static int ReadLzwCode(byte[] data, ref long bitPos, int codeLength)
+    {
+        int code = 0;
+        for (int i = 0; i < codeLength; i++, bitPos++)
+            code = code << 1 | (data[bitPos >> 3] >> (7 - (int)(bitPos & 7)) & 1);
+        return code;
+    }
+
+    /// <summary>
+    /// The bytes <paramref name="code"/> stands for: a table entry, or (for the code about to be
+    /// added) the previous entry followed by its own first byte.
+    /// </summary>
+    private static byte[] LzwEntry(List<byte[]> table, int code, byte[]? previous)
+    {
+        if (code < table.Count && code != 256 && code != 257) return table[code];
+        if (code == table.Count && previous != null) return Append(previous, previous[0]);
+        throw new PdfFormatException($"The LZW data contains the code {code}, which is not in its table: the stream is corrupt.");
+    }
+
+    private static byte[] Append(byte[] sequence, byte last)
+    {
+        var result = new byte[sequence.Length + 1];
+        sequence.CopyTo(result, 0);
+        result[^1] = last;
+        return result;
+    }
+
+    private static int LzwCodeLength(int tableCount, int earlyChange)
+    {
+        int next = tableCount + (earlyChange == 0 ? 0 : 1);
+        return next >= 2048 ? 12 : next >= 1024 ? 11 : next >= 512 ? 10 : 9;
     }
 
     // ------------------------------------------------------------------ ASCII filters
@@ -612,26 +637,40 @@ internal static class PdfFilters
             if (b == '~') break; // "~>" ends the data
             if (b == 'z')
             {
-                if (count != 0) throw new PdfFormatException("The ASCII85 data has a 'z' inside a group: the stream is corrupt.");
-                output.Write(zeros);
+                WriteZeroGroup(output, zeros, count);
                 continue;
             }
-            if (b < '!' || b > 'u')
-                throw new PdfFormatException($"The ASCII85 data contains the byte 0x{b:X2}, which is outside its alphabet: the stream is corrupt.");
-            group[count++] = b - '!';
+            group[count++] = Ascii85Digit(b);
             if (count == 5)
             {
                 WriteGroup(output, group, 4);
                 count = 0;
             }
         }
-        if (count == 1) throw new PdfFormatException("The ASCII85 data ends with a single-character group, which encodes nothing: the stream is corrupt.");
-        if (count > 1)
-        {
-            for (int k = count; k < 5; k++) group[k] = 84; // pad with 'u'
-            WriteGroup(output, group, count - 1);
-        }
+        WriteFinalGroup(output, group, count);
         return output.ToArray();
+    }
+
+    private static void WriteZeroGroup(MemoryStream output, ReadOnlySpan<byte> zeros, int count)
+    {
+        if (count != 0) throw new PdfFormatException("The ASCII85 data has a 'z' inside a group: the stream is corrupt.");
+        output.Write(zeros);
+    }
+
+    private static int Ascii85Digit(byte b)
+    {
+        if (b < '!' || b > 'u')
+            throw new PdfFormatException($"The ASCII85 data contains the byte 0x{b:X2}, which is outside its alphabet: the stream is corrupt.");
+        return b - '!';
+    }
+
+    /// <summary>Writes a final partial group, padded with 'u' as the format requires.</summary>
+    private static void WriteFinalGroup(MemoryStream output, Span<int> group, int count)
+    {
+        if (count == 1) throw new PdfFormatException("The ASCII85 data ends with a single-character group, which encodes nothing: the stream is corrupt.");
+        if (count == 0) return;
+        for (int k = count; k < 5; k++) group[k] = 84; // pad with 'u'
+        WriteGroup(output, group, count - 1);
     }
 
     private static void WriteGroup(MemoryStream output, Span<int> group, int bytes)
@@ -650,24 +689,31 @@ internal static class PdfFilters
         {
             int length = data[i++];
             if (length == 128) break;
-            if (length < 128)
-            {
-                int n = length + 1;
-                if (i + n > data.Length)
-                    throw new PdfFormatException("A RunLength literal run promises more bytes than the stream holds: it is truncated.");
-                output.Write(data, i, n);
-                i += n;
-            }
-            else
-            {
-                if (i >= data.Length)
-                    throw new PdfFormatException("A RunLength repeat run has no byte to repeat: the stream is truncated.");
-                byte b = data[i++];
-                for (int k = 0; k < 257 - length; k++) output.WriteByte(b);
-            }
+            i = length < 128
+                ? CopyLiteralRun(data, i, length + 1, output)
+                : RepeatRun(data, i, 257 - length, output);
             if (output.Length > MaxDecodedBytes)
                 throw new PdfFormatException("The RunLength data expands past the decode limit.");
         }
         return output.ToArray();
+    }
+
+    /// <summary>Copies the next <paramref name="n"/> bytes through; returns the position after them.</summary>
+    private static int CopyLiteralRun(byte[] data, int i, int n, MemoryStream output)
+    {
+        if (i + n > data.Length)
+            throw new PdfFormatException("A RunLength literal run promises more bytes than the stream holds: it is truncated.");
+        output.Write(data, i, n);
+        return i + n;
+    }
+
+    /// <summary>Writes the next byte <paramref name="times"/> times; returns the position after it.</summary>
+    private static int RepeatRun(byte[] data, int i, int times, MemoryStream output)
+    {
+        if (i >= data.Length)
+            throw new PdfFormatException("A RunLength repeat run has no byte to repeat: the stream is truncated.");
+        byte b = data[i];
+        for (int k = 0; k < times; k++) output.WriteByte(b);
+        return i + 1;
     }
 }
