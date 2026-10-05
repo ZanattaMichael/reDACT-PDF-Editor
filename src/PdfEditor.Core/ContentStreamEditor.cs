@@ -43,6 +43,7 @@ internal enum ContentKinds
 internal sealed class ContentStreamEditor : ContentProcessor
 {
     private const float Epsilon = 0.05f;
+    private static readonly PdfName Type3 = PdfName.Of("Type3");
 
     private readonly IList<PdfRect> _regions;
     private readonly PdfDocument _document;
@@ -53,6 +54,17 @@ internal sealed class ContentStreamEditor : ContentProcessor
 
     private MemoryStream _out = new();
     private PdfDictionary _editResources = new();
+
+    // The /XObject dictionary the rewritten stream draws from. It starts as a copy of the edited
+    // resources' own and replaces it only once the stream is done, and only if the edit changed it:
+    // the original may be shared with pages that still draw everything in it.
+    private PdfDictionary _xobjects = new();
+    private bool _xobjectsChanged;
+
+    // XObject names whose draw this edit dropped or redirected to an edited clone, and every name the
+    // rewritten stream still draws. The difference is what gets pruned from the edited resources.
+    private readonly HashSet<PdfName> _retired = new();
+    private readonly HashSet<PdfName> _drawn = new();
 
     public bool RemovedAnything { get; private set; }
 
@@ -76,20 +88,39 @@ internal sealed class ContentStreamEditor : ContentProcessor
     {
         PdfStructureGuard.EnsureFormXObjectsTerminate(page);
         byte[] content = PdfIo.Guarded("decoding the page content stream", page.GetContentBytes);
-        _editResources = page.GetOrCreateResources();
-        _out = new MemoryStream();
-        PdfIo.Guarded("rewriting the page content stream", () => ProcessContent(content, _editResources));
+        var resources = page.GetOrCreateResources();
+        Begin(resources);
+        PdfIo.Guarded("rewriting the page content stream", () => ProcessContent(content, resources));
         page.SetContent(_out.ToArray());
+        if (!PruneXObjects()) return;
+        // An indirect resource dictionary may be shared with pages that still draw what this one
+        // stopped drawing, so the page gets a copy of its own.
+        if (resources.IsIndirect)
+        {
+            resources = ShallowCopy(resources);
+            page.Dictionary.Put(PdfName.Resources, resources);
+        }
+        resources.Put(PdfName.XObject, _xobjects);
     }
 
-    /// <summary>Rewrites the raw content of a form XObject stream in place.</summary>
+    /// <summary>
+    /// Rewrites the raw content of a form XObject stream in place. <paramref name="resources"/> must
+    /// belong to <paramref name="formStream"/> alone: what the rewrite stops drawing is pruned from it.
+    /// </summary>
     public void EditFormStream(PdfStream formStream, PdfDictionary resources)
     {
         byte[] content = PdfIo.Guarded("decoding a form XObject stream", formStream.GetDecodedBytes);
-        _editResources = resources;
-        _out = new MemoryStream();
+        Begin(resources);
         PdfIo.Guarded("rewriting a form XObject stream", () => ProcessContent(content, resources));
         formStream.SetData(_out.ToArray());
+        if (PruneXObjects()) resources.Put(PdfName.XObject, _xobjects);
+    }
+
+    private void Begin(PdfDictionary resources)
+    {
+        _editResources = resources;
+        _xobjects = ShallowCopy(resources.GetAsDictionary(PdfName.XObject) ?? new PdfDictionary());
+        _out = new MemoryStream();
     }
 
     protected override void Invoke(ContentOperation op)
@@ -229,14 +260,16 @@ internal sealed class ContentStreamEditor : ContentProcessor
         var stream = name == null ? null : Resources?.GetAsDictionary(PdfName.XObject)?.GetAsStream(name);
         var subtype = stream?.GetAsName(PdfName.Subtype);
 
-        if (name == null || stream == null)
+        if (name == null)
             Write(op);
+        else if (stream == null)
+            WriteDo(op, name);
         else if (PdfName.Image.Equals(subtype))
             HandleImageDo(op, name, stream);
         else if (PdfName.Form.Equals(subtype))
-            HandleFormDo(op, stream);
+            HandleFormDo(op, name, stream);
         else
-            Write(op);
+            WriteDo(op, name);
     }
 
     private void HandleImageDo(ContentOperation op, PdfName name, PdfStream stream)
@@ -244,7 +277,7 @@ internal sealed class ContentStreamEditor : ContentProcessor
         var bbox = State.Ctm.TransformRect(0, 0, 1, 1);
         if (!IntersectsAnyRegion(bbox) || _kinds == ContentKinds.TextOnly)
         {
-            Write(op);
+            WriteDo(op, name);
             return;
         }
         RemovedAnything = true;
@@ -252,20 +285,24 @@ internal sealed class ContentStreamEditor : ContentProcessor
         // page, and losing the whole page image to replace one of them is not a trade any
         // user would make. Redaction still drops it, because leaving it is a disclosure.
         if (ContainedInAnyRegion(bbox) && _kinds != ContentKinds.TextAndPixelsBeneath)
+        {
+            _retired.Add(name);
             return; // fully covered: drop the draw call entirely
+        }
         var fill = _kinds == ContentKinds.TextAndPixelsBeneath
             ? ScrubFill.SurroundingPaper : ScrubFill.Black;
         if (ImageScrubber.TryScrubPixels(stream, bbox, _regions, out var scrubFailure, fill, Resources))
         {
-            Write(op);
+            WriteDo(op, name);
             return;
         }
         _warnings.Add($"Image '{name.Value}' partially overlaps a redaction region " +
                       $"and could not be pixel-scrubbed ({scrubFailure}); it was removed " +
                       "entirely.");
+        _retired.Add(name);
     }
 
-    private void HandleFormDo(ContentOperation op, PdfStream stream)
+    private void HandleFormDo(ContentOperation op, PdfName name, PdfStream stream)
     {
         // Never let the interpreter recurse into the form: it would replay the form's content
         // through this editor and inline it into the page. Handle it on a copy instead.
@@ -273,9 +310,10 @@ internal sealed class ContentStreamEditor : ContentProcessor
         var formBBox = PdfRect.FromArray(stream.GetAsArray(PdfName.BBox)) is { } box ? full.TransformRect(box) : (PdfRect?)null;
         if (formBBox is not { } fb || !IntersectsAnyRegion(fb))
         {
-            Write(op);
+            WriteDo(op, name);
             return;
         }
+        _retired.Add(name);
         if (_depth >= 6)
         {
             _warnings.Add("Form XObject nesting too deep; dropping the whole form inside the region.");
@@ -284,27 +322,69 @@ internal sealed class ContentStreamEditor : ContentProcessor
         }
         var cloned = PdfStream.FromFile(stream, stream.RawData);
         _document.MakeIndirect(cloned);
-        var formResources = ResourcesForClone(cloned);
         var inner = Create(TransformRegionsInto(full), _document, _warnings, _depth + 1, _kinds);
-        inner.EditFormStream(cloned, formResources);
+        inner.EditFormStream(cloned, inner.ResourcesForClone(cloned, _editResources));
         RemovedAnything |= inner.RemovedAnything;
-        var newName = PdfResources.Add(_editResources, PdfName.XObject, "Fm", cloned);
-        Write(new ContentOperation("Do", new List<PdfObject> { newName }));
+        var newName = PdfResources.AddEntry(_xobjects, "Fm", cloned);
+        _xobjectsChanged = true;
+        WriteDo(new ContentOperation("Do", new List<PdfObject> { newName }), newName);
+    }
+
+    private void WriteDo(ContentOperation op, PdfName name)
+    {
+        _drawn.Add(name);
+        Write(op);
     }
 
     /// <summary>
-    /// The clone gets its own resource dictionaries: editing it registers new XObjects there, and
-    /// those must not appear in the original form, which other pages may still draw. A form with
-    /// no resources of its own keeps drawing with its parent's.
+    /// Gives a cloned form a resource dictionary of its own before this editor rewrites it. The
+    /// clone shares every entry with its original, so without this the names the edit adds, and the
+    /// ones it prunes, would land in resources the original, which other pages may still draw, uses.
+    /// <para>
+    /// A form with no <c>/Resources</c> draws with <paramref name="parentResources"/>. Its clone gets
+    /// a copy, which also names every original the parent is about to prune; nothing else uses the
+    /// copy, so whatever in it the rewritten form doesn't draw is retired too.
+    /// </para>
     /// </summary>
-    private PdfDictionary ResourcesForClone(PdfStream cloned)
+    private PdfDictionary ResourcesForClone(PdfStream cloned, PdfDictionary parentResources)
     {
-        if (cloned.GetAsDictionary(PdfName.Resources) is not { } own) return _editResources;
-        var formResources = ShallowCopy(own);
-        if (own.GetAsDictionary(PdfName.XObject) is { } xobjects)
-            formResources.Put(PdfName.XObject, ShallowCopy(xobjects));
-        cloned.Put(PdfName.Resources, formResources);
-        return formResources;
+        var own = cloned.GetAsDictionary(PdfName.Resources);
+        if (own == null && parentResources.GetAsDictionary(PdfName.XObject) is { } inherited)
+            _retired.UnionWith(inherited.Keys);
+        var resources = ShallowCopy(own ?? parentResources);
+        cloned.Put(PdfName.Resources, resources);
+        return resources;
+    }
+
+    /// <summary>
+    /// Takes what the rewritten stream no longer draws out of <see cref="_xobjects"/>, and says
+    /// whether that now differs from the dictionary it was copied from. Otherwise the original of
+    /// every edited form, and every dropped image, stays reachable from the resources, and the
+    /// writer saves it, redacted content and all.
+    /// </summary>
+    private bool PruneXObjects()
+    {
+        var stale = _retired.Where(n => !_drawn.Contains(n) && _xobjects.ContainsKey(n)).ToList();
+        if (stale.Count == 0 || BorrowsResources()) return _xobjectsChanged;
+        foreach (var name in stale) _xobjects.Remove(name);
+        return true;
+    }
+
+    /// <summary>
+    /// Whether content with no <c>/Resources</c> of its own may be looking names up in the edited
+    /// resources: a form the rewritten stream still draws, or a Type 3 font, whose glyphs use the
+    /// resources of whatever shows them. What that content draws can't be seen from this stream,
+    /// so nothing is pruned.
+    /// </summary>
+    private bool BorrowsResources()
+    {
+        bool formBorrows = _drawn.Any(n => _xobjects.GetAsStream(n) is { } x
+            && PdfName.Form.Equals(x.GetAsName(PdfName.Subtype))
+            && x.GetAsDictionary(PdfName.Resources) == null);
+        var fonts = _editResources.GetAsDictionary(PdfName.Font);
+        return formBorrows || (fonts != null && fonts.Keys.Any(n => fonts.GetAsDictionary(n) is { } f
+            && f.Is(Type3, PdfName.Subtype)
+            && f.GetAsDictionary(PdfName.Resources) == null));
     }
 
     private void HandleInlineImage(ContentOperation op)

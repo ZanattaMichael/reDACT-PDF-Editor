@@ -489,12 +489,21 @@ internal static class PdfResources
             dict = new PdfDictionary();
             resources.Put(category, dict);
         }
-        foreach (var key in dict.Keys)
-            if (ReferenceEquals(dict.Get(key), value)) return key;
+        return AddEntry(dict, prefix, value);
+    }
+
+    /// <summary>
+    /// Adds <paramref name="value"/> to <paramref name="entries"/>, one category of a resource
+    /// dictionary, the way <see cref="Add"/> does.
+    /// </summary>
+    public static PdfName AddEntry(PdfDictionary entries, string prefix, PdfObject value)
+    {
+        foreach (var key in entries.Keys)
+            if (ReferenceEquals(entries.Get(key), value)) return key;
         int i = 1;
-        while (dict.ContainsKey(PdfName.Of(prefix + i.ToString(CultureInfo.InvariantCulture)))) i++;
+        while (entries.ContainsKey(PdfName.Of(prefix + i.ToString(CultureInfo.InvariantCulture)))) i++;
         var name = PdfName.Of(prefix + i.ToString(CultureInfo.InvariantCulture));
-        dict.Put(name, value);
+        entries.Put(name, value);
         return name;
     }
 }
