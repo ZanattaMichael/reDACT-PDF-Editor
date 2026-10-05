@@ -25,7 +25,7 @@ page 1: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
 acroform: none
 validation: clean
 == redact ==
-bytes: ~3072
+bytes: ~2304
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -37,15 +37,6 @@ page 1: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
   ops: BTx1 Dox1 ETx1 Qx2 Tdx1 Tfx1 Tjx1 cmx1 fx1 gx1 gsx1 qx2 rex1 rgx1
   font F1: subtype=Type1 base=Helvetica toUnicode=no widths=0
   gs GS1: BM=/Normal ca=0.8
-  xobject Fm1: subtype=Form bbox=[0 0 300 240] matrix=none group=Transparency(cs=/DeviceRGB I=false K=false)
-    ops: Dox1 Qx1 cmx1 fx1 gsx1 qx1 rex1 rgx1
-    gs GS2: BM=/Multiply ca=0.5
-    xobject Fm2: subtype=Form bbox=[0 0 200 160] matrix=none group=Transparency(cs=/DeviceRGB I=true K=true)
-      ops: BTx1 Dox1 ETx1 Qx1 Tdx1 Tfx1 Tjx1 cmx1 fx1 gx1 gsx1 qx1 rex1 rgx1
-      font F1: subtype=Type1 base=Helvetica toUnicode=no widths=0
-      gs GS3: BM=/Darken ca=0.35
-      xobject Fm3: subtype=Form bbox=[0 0 120 100] matrix=none group=Transparency(cs=/DeviceGray I=true K=false)
-        ops: fx1 gx1 rex1
   xobject Fm2: subtype=Form bbox=[0 0 300 240] matrix=none group=Transparency(cs=/DeviceRGB I=false K=false)
     ops: Dox1 Qx1 cmx1 fx1 gsx1 qx1 rex1 rgx1
     gs GS2: BM=/Multiply ca=0.5
@@ -55,18 +46,12 @@ page 1: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
       gs GS3: BM=/Darken ca=0.35
       xobject Fm1: subtype=Form bbox=[0 0 120 100] matrix=none group=Transparency(cs=/DeviceGray I=true K=false)
         ops: fx1 gx1 rex1
-      xobject Fm3: subtype=Form bbox=[0 0 120 100] matrix=none group=Transparency(cs=/DeviceGray I=true K=false)
-        ops: fx1 gx1 rex1
-    xobject Fm2: subtype=Form bbox=[0 0 200 160] matrix=none group=Transparency(cs=/DeviceRGB I=true K=true)
-      ops: BTx1 Dox1 ETx1 Qx1 Tdx1 Tfx1 Tjx1 cmx1 fx1 gx1 gsx1 qx1 rex1 rgx1
-      font F1: subtype=Type1 base=Helvetica toUnicode=no widths=0
-      gs GS3: BM=/Darken ca=0.35
-      xobject Fm3: subtype=Form bbox=[0 0 120 100] matrix=none group=Transparency(cs=/DeviceGray I=true K=false)
-        ops: fx1 gx1 rex1
+        font F1: subtype=Type1 base=Helvetica toUnicode=no widths=0
+        gs GS3: BM=/Darken ca=0.35
 acroform: none
 validation: clean
 == replace-region-text ==
-bytes: ~3328
+bytes: ~2304
 pdf-version: PDF-1.7
 pages: 1
 encrypted: no
@@ -79,15 +64,6 @@ page 1: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
   font F1: subtype=Type1 base=Helvetica toUnicode=no widths=0
   font F2: subtype=Type1 base=Helvetica encoding=WinAnsiEncoding toUnicode=no widths=0
   gs GS1: BM=/Normal ca=0.8
-  xobject Fm1: subtype=Form bbox=[0 0 300 240] matrix=none group=Transparency(cs=/DeviceRGB I=false K=false)
-    ops: Dox1 Qx1 cmx1 fx1 gsx1 qx1 rex1 rgx1
-    gs GS2: BM=/Multiply ca=0.5
-    xobject Fm2: subtype=Form bbox=[0 0 200 160] matrix=none group=Transparency(cs=/DeviceRGB I=true K=true)
-      ops: BTx1 Dox1 ETx1 Qx1 Tdx1 Tfx1 Tjx1 cmx1 fx1 gx1 gsx1 qx1 rex1 rgx1
-      font F1: subtype=Type1 base=Helvetica toUnicode=no widths=0
-      gs GS3: BM=/Darken ca=0.35
-      xobject Fm3: subtype=Form bbox=[0 0 120 100] matrix=none group=Transparency(cs=/DeviceGray I=true K=false)
-        ops: fx1 gx1 rex1
   xobject Fm2: subtype=Form bbox=[0 0 300 240] matrix=none group=Transparency(cs=/DeviceRGB I=false K=false)
     ops: Dox1 Qx1 cmx1 fx1 gsx1 qx1 rex1 rgx1
     gs GS2: BM=/Multiply ca=0.5
@@ -97,14 +73,8 @@ page 1: media=[0 0 400 600] crop=none rotate=0 annots=0 group=none
       gs GS3: BM=/Darken ca=0.35
       xobject Fm1: subtype=Form bbox=[0 0 120 100] matrix=none group=Transparency(cs=/DeviceGray I=true K=false)
         ops: fx1 gx1 rex1
-      xobject Fm3: subtype=Form bbox=[0 0 120 100] matrix=none group=Transparency(cs=/DeviceGray I=true K=false)
-        ops: fx1 gx1 rex1
-    xobject Fm2: subtype=Form bbox=[0 0 200 160] matrix=none group=Transparency(cs=/DeviceRGB I=true K=true)
-      ops: BTx1 Dox1 ETx1 Qx1 Tdx1 Tfx1 Tjx1 cmx1 fx1 gx1 gsx1 qx1 rex1 rgx1
-      font F1: subtype=Type1 base=Helvetica toUnicode=no widths=0
-      gs GS3: BM=/Darken ca=0.35
-      xobject Fm3: subtype=Form bbox=[0 0 120 100] matrix=none group=Transparency(cs=/DeviceGray I=true K=false)
-        ops: fx1 gx1 rex1
+        font F1: subtype=Type1 base=Helvetica toUnicode=no widths=0
+        gs GS3: BM=/Darken ca=0.35
 acroform: none
 validation: clean
 == rotate-90 ==

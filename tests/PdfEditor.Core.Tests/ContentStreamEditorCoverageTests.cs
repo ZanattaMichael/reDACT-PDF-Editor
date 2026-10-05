@@ -1,4 +1,8 @@
+using System.Text;
 using PdfEditor.Core;
+using PdfEditor.Core.Pdf;
+using PdfEditor.Tests.Fuzz;
+using PdfEditor.Tests.Golden;
 using SkiaSharp;
 using Xunit;
 
@@ -85,6 +89,209 @@ public class ContentStreamEditorCoverageTests
         Assert.DoesNotContain("innermost", TestPdfAssert.ExtractText(result.Pdf));
         Assert.DoesNotContain(result.Warnings, w => w.Contains("nesting too deep"));
     }
+
+    // ------------------------------------------- what an edit leaves in the file, not just on the page
+
+    /// <summary>
+    /// Every form overlapping the region is edited on a clone, and the page draws the clone instead.
+    /// The originals used to stay named in the resources, so the writer saved them, unredacted text
+    /// and all: invisible to text extraction, because nothing draws them, but not to anyone who opens
+    /// the file. Searching the decoded streams is what catches that.
+    /// </summary>
+    [Fact]
+    public void NestedFormRedaction_LeavesNoCopyOfTheTextAnywhereInTheFile()
+    {
+        byte[] pdf = TestPdfs.WithNestedForms(3, 100, 500, 200, 60);
+        Assert.True(TestPdfAssert.AppearsAnywhere(pdf, "innermost"));
+
+        var result = Redactor.Redact(pdf, new[] { new RectRegion(1, 90, 490, 220, 80) });
+
+        Assert.False(TestPdfAssert.AppearsAnywhere(result.Pdf, "innermost"));
+        Assert.Contains("Document with nested forms", TestPdfAssert.ExtractText(result.Pdf));
+    }
+
+    [Fact]
+    public void NestedTransparencyGroupRedaction_LeavesNoCopyOfTheTextAnywhereInTheFile()
+    {
+        byte[] pdf = GoldenPdfs.NestedTransparencyGroups();
+        Assert.True(TestPdfAssert.AppearsAnywhere(pdf, "inner group"));
+
+        var result = Redactor.Redact(pdf, new[] { GoldenCorpus.Region });
+
+        Assert.False(TestPdfAssert.AppearsAnywhere(result.Pdf, "inner group"));
+        Assert.Contains("golden corpus", TestPdfAssert.ExtractText(result.Pdf));
+    }
+
+    /// <summary>
+    /// A form without <c>/Resources</c> of its own draws with its parent's, so its edited clone gets a
+    /// copy of them. That copy names the very original the page is replacing, and has to be pruned
+    /// as well or it keeps that original in the file.
+    /// </summary>
+    [Fact]
+    public void RedactedFormWithoutResourcesOfItsOwn_KeepsNoOriginalAlive()
+    {
+        byte[] pdf = RawPdf.Build(new[]
+        {
+            RawPdf.Obj("<< /Type /Catalog /Pages 2 0 R >>"),
+            RawPdf.Obj("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            RawPdf.Obj("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 600] " +
+                       "/Resources << /XObject << /Fm1 5 0 R /Wrapper 6 0 R >> >> /Contents 4 0 R >>"),
+            Stream("", "q 1 0 0 1 40 400 cm /Fm1 Do Q q 1 0 0 1 40 400 cm /Wrapper Do Q"),
+            TextForm("secret text", font: 7),
+            Stream("/Type /XObject /Subtype /Form /BBox [0 0 200 50]", "0 0 1 rg 0 0 50 50 re f"),
+            RawPdf.Obj(Helvetica),
+        }, "/Root 1 0 R");
+        Assert.True(TestPdfAssert.AppearsAnywhere(pdf, "secret text"));
+
+        var result = Redactor.Redact(pdf, new[] { OverUpperForm });
+
+        Assert.False(TestPdfAssert.AppearsAnywhere(result.Pdf, "secret text"));
+    }
+
+    [Fact]
+    public void FullyRedactedImage_IsNotSavedInTheFile()
+    {
+        byte[] pdf = TestPdfs.WithImage(100, 500, 200, 100);
+
+        var result = Redactor.Redact(pdf, new[] { new RectRegion(1, 90, 490, 220, 120) });
+
+        var doc = PdfDocument.Open(result.Pdf);
+        Assert.DoesNotContain(doc.ObjectNumbers.Select(doc.GetObject),
+            o => o is PdfStream s && PdfName.Image.Equals(s.GetAsName(PdfName.Subtype)));
+    }
+
+    /// <summary>
+    /// Each page names the same form in a resource dictionary of its own. Redacting it on page 1
+    /// takes the entry out of page 1's resources only; page 2 still draws the form.
+    /// </summary>
+    [Fact]
+    public void FormSharedWithAnotherPage_IsOnlyUnnamedOnTheRedactedPage()
+    {
+        byte[] pdf = RawPdf.Build(new[]
+        {
+            RawPdf.Obj("<< /Type /Catalog /Pages 2 0 R >>"),
+            RawPdf.Obj("<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>"),
+            RawPdf.Obj("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 600] " +
+                       "/Resources << /XObject << /Fm1 7 0 R >> >> /Contents 5 0 R >>"),
+            RawPdf.Obj("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 600] " +
+                       "/Resources << /XObject << /Fm1 7 0 R >> >> /Contents 6 0 R >>"),
+            Stream("", "q 1 0 0 1 40 400 cm /Fm1 Do Q"),
+            Stream("", "q 1 0 0 1 40 400 cm /Fm1 Do Q"),
+            TextForm("shared form", font: 8),
+            RawPdf.Obj(Helvetica),
+        }, "/Root 1 0 R");
+
+        var result = Redactor.Redact(pdf, new[] { OverUpperForm });
+
+        Assert.DoesNotContain("shared form", TestPdfAssert.ExtractText(result.Pdf, 1));
+        Assert.Contains("shared form", TestPdfAssert.ExtractText(result.Pdf, 2));
+        var doc = PdfDocument.Open(result.Pdf);
+        int shared = XObjectsOf(doc, 2).GetAsStream(PdfName.Of("Fm1"))!.Reference!.Number;
+        var page1 = XObjectsOf(doc, 1);
+        Assert.DoesNotContain(shared, page1.Keys.Select(n => page1.GetAsStream(n)!.Reference!.Number));
+    }
+
+    /// <summary>
+    /// The pages share one resource dictionary, either by reference or by inheriting it from the page
+    /// tree. Editing it in place would pull the XObject out from under page 2, which still draws it,
+    /// or name page 1's edited clone there. The image cases matter because a dropped image adds no
+    /// clone: pruning is the only change the edit makes to the resources.
+    /// </summary>
+    [Theory]
+    [InlineData("", "/Resources 5 0 R", false)]
+    [InlineData("/Resources 5 0 R", "", false)]
+    [InlineData("", "/Resources 5 0 R", true)]
+    [InlineData("/Resources 5 0 R", "", true)]
+    public void PagesSharingOneResourceDictionary_StillDrawTheXObjectOnTheOtherPage(
+        string pageTreeEntries, string pageEntries, bool image)
+    {
+        string draw = image ? "q 200 0 0 50 40 400 cm /X Do Q" : "q 1 0 0 1 40 400 cm /X Do Q";
+        byte[] pdf = RawPdf.Build(new[]
+        {
+            RawPdf.Obj("<< /Type /Catalog /Pages 2 0 R >>"),
+            RawPdf.Obj($"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 {pageTreeEntries} >>"),
+            RawPdf.Obj($"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 600] {pageEntries} /Contents 6 0 R >>"),
+            RawPdf.Obj($"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 600] {pageEntries} /Contents 7 0 R >>"),
+            RawPdf.Obj("<< /XObject << /X 8 0 R >> >>"),
+            Stream("", draw),
+            Stream("", draw),
+            image
+                ? RawPdf.StreamObj("/Type /XObject /Subtype /Image /Width 1 /Height 1 " +
+                                   "/ColorSpace /DeviceGray /BitsPerComponent 8", new byte[] { 0x80 })
+                : TextForm("shared form", font: 9),
+            RawPdf.Obj(Helvetica),
+        }, "/Root 1 0 R");
+
+        var result = Redactor.Redact(pdf, new[] { OverUpperForm });
+
+        bool Drawn(int page) => image
+            ? TestPdfAssert.CountImages(result.Pdf, page) == 1
+            : TestPdfAssert.ExtractText(result.Pdf, page).Contains("shared form");
+        Assert.False(Drawn(1));
+        Assert.True(Drawn(2));
+        Assert.Equal(new[] { "X" }, XObjectsOf(PdfDocument.Open(result.Pdf), 2).Keys.Select(n => n.Value));
+    }
+
+    [Fact]
+    public void FormDrawnAgainOutsideTheRegion_KeepsItsResourceEntry()
+    {
+        byte[] pdf = RawPdf.Build(new[]
+        {
+            RawPdf.Obj("<< /Type /Catalog /Pages 2 0 R >>"),
+            RawPdf.Obj("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            RawPdf.Obj("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 600] " +
+                       "/Resources << /XObject << /Fm1 5 0 R >> >> /Contents 4 0 R >>"),
+            Stream("", "q 1 0 0 1 40 400 cm /Fm1 Do Q q 1 0 0 1 40 100 cm /Fm1 Do Q"),
+            TextForm("drawn twice", font: 6),
+            RawPdf.Obj(Helvetica),
+        }, "/Root 1 0 R");
+
+        var result = Redactor.Redact(pdf, new[] { OverUpperForm });
+
+        string text = TestPdfAssert.ExtractText(result.Pdf);
+        Assert.Equal(1, text.Split("drawn twice").Length - 1);
+    }
+
+    /// <summary>
+    /// <c>/Wrapper</c> has no <c>/Resources</c>, so the <c>/Fm1</c> it draws is looked up in the
+    /// page's. The page's own draw of <c>/Fm1</c> is redacted, but the entry has to stay for
+    /// <c>/Wrapper</c>, which is outside the region.
+    /// </summary>
+    [Fact]
+    public void FormWithoutResourcesOfItsOwn_StillFindsWhatItDrawsInThePageResources()
+    {
+        byte[] pdf = RawPdf.Build(new[]
+        {
+            RawPdf.Obj("<< /Type /Catalog /Pages 2 0 R >>"),
+            RawPdf.Obj("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            RawPdf.Obj("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 600] " +
+                       "/Resources << /XObject << /Fm1 5 0 R /Wrapper 6 0 R >> >> /Contents 4 0 R >>"),
+            Stream("", "q 1 0 0 1 40 400 cm /Fm1 Do Q q 1 0 0 1 40 100 cm /Wrapper Do Q"),
+            TextForm("borrowed form", font: 7),
+            Stream("/Type /XObject /Subtype /Form /BBox [0 0 200 50]", "/Fm1 Do"),
+            RawPdf.Obj(Helvetica),
+        }, "/Root 1 0 R");
+
+        var result = Redactor.Redact(pdf, new[] { OverUpperForm });
+
+        Assert.Contains("borrowed form", TestPdfAssert.ExtractText(result.Pdf));
+    }
+
+    private const string Helvetica = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
+
+    /// <summary>Covers a 200×50 form drawn at (40, 400) and nothing drawn at (40, 100).</summary>
+    private static readonly RectRegion OverUpperForm = new(1, 30, 390, 220, 70);
+
+    private static byte[] Stream(string dictEntries, string data) =>
+        RawPdf.StreamObj(dictEntries, Encoding.Latin1.GetBytes(data));
+
+    /// <summary>A 200×50 form showing <paramref name="text"/> in the Helvetica at object <paramref name="font"/>.</summary>
+    private static byte[] TextForm(string text, int font) => Stream(
+        $"/Type /XObject /Subtype /Form /BBox [0 0 200 50] /Resources << /Font << /F1 {font} 0 R >> >>",
+        $"BT /F1 12 Tf 4 20 Td ({text}) Tj ET");
+
+    private static PdfDictionary XObjectsOf(PdfDocument doc, int page) =>
+        doc.GetPage(page).Resources!.GetAsDictionary(PdfName.XObject)!;
 
     [Fact]
     public void QuoteOperator_RemovesOnlyTheTargetedLine()
