@@ -94,8 +94,11 @@ function buildLeftoverCtmPdf(word = 'SECRET', control = 'KEEPME') {
   return Buffer.from(body, 'latin1');
 }
 
-/** Serialises a 1-indexed list of object bodies into a valid PDF with an xref table. */
-function assemble(objects) {
+/**
+ * Serialises a 1-indexed list of object bodies into a valid PDF with an xref table.
+ * `trailerEntries` is added to the trailer dictionary as written (an /Encrypt reference, an /ID).
+ */
+function assemble(objects, trailerEntries = '') {
   let body = '%PDF-1.4\n';
   const offsets = [0];
   objects.forEach((obj, i) => {
@@ -107,7 +110,8 @@ function assemble(objects) {
   for (let i = 1; i <= objects.length; i++) {
     body += `${String(offsets[i]).padStart(10, '0')} 00000 n \n`;
   }
-  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF\n`;
+  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R ${trailerEntries}>>\n`
+    + `startxref\n${xrefStart}\n%%EOF\n`;
   return Buffer.from(body, 'latin1');
 }
 
@@ -279,8 +283,131 @@ function buildJsLinkPdf(script = 'window.close();') {
   ]);
 }
 
+// ------------------------------------------------------- fixtures for the 3.0 engine suite
+
+const escapeText = (t) => t.replace(/([\\()])/g, '\\$1');
+
+/** A Helvetica text-showing block for each `{ text, x, y, size }` line. */
+const showText = (lines, font = 'F1') => lines
+  .map(({ text, x, y, size = 14 }) => `BT /${font} ${size} Tf ${x} ${y} Td (${escapeText(text)}) Tj ET`)
+  .join('\n');
+
+/** A stream object body holding `content` (a string) under the given extra dictionary entries. */
+const streamObject = (entries, content) =>
+  `<< ${entries} /Length ${content.length} >>\nstream\n${content}\nendstream`;
+
+/**
+ * One page that draws a form XObject, which in turn draws a second form showing `secret`; the
+ * page also shows `control` directly, well below them. The inner form's text lands at about
+ * (92, 640) in page space, inside the 300x100 outer form placed at (72, 600).
+ *
+ * The fixture for redaction through nested forms: the editor rewrites each form on a copy, and
+ * the originals, which still hold the text, must not be left in the saved file.
+ */
+function buildNestedFormPdf({ secret, control }) {
+  return assemble([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R '
+      + '/Resources << /Font << /F1 5 0 R >> /XObject << /Fm0 6 0 R >> >> >>',
+    streamObject('', `q 1 0 0 1 72 600 cm /Fm0 Do Q\n${showText([{ text: control, x: 72, y: 400 }])}`),
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    streamObject('/Type /XObject /Subtype /Form /BBox [0 0 300 100] /Resources << /XObject << /Fm1 7 0 R >> >>',
+      'q 1 0 0 1 10 10 cm /Fm1 Do Q'),
+    streamObject('/Type /XObject /Subtype /Form /BBox [0 0 280 80] /Resources << /Font << /F1 5 0 R >> >>',
+      showText([{ text: secret, x: 10, y: 30, size: 18 }])),
+  ]);
+}
+
+/**
+ * One page whose content stream says it is Flate-compressed but holds plain text, so it cannot
+ * be decoded. iText read such a page as empty, which made "redact" silently wipe it.
+ */
+function buildUndecodableContentPdf(text = 'Corrupt page text') {
+  return assemble([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R '
+      + '/Resources << /Font << /F1 5 0 R >> >> >>',
+    streamObject('/Filter /FlateDecode', showText([{ text, x: 72, y: 700 }])),
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ]);
+}
+
+/**
+ * One page that shows `lines` in a font it never declares: /Resources has no /Font at all. iText
+ * threw NullReferenceException on such text; 3.0 reads it with a standard font's metrics.
+ */
+function buildUndeclaredFontPdf(lines) {
+  return assemble([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << >> >>',
+    streamObject('', showText(lines)),
+  ]);
+}
+
+/**
+ * Three pages ("<prefix> page N") and bookmarks reaching them every way a bookmark can lead
+ * somewhere, plus one that leads nowhere in the document:
+ *
+ *   <prefix> one            -> page 1 (explicit destination)
+ *   <prefix> two            -> page 2 (GoTo action)
+ *     <prefix> two point one -> page 2 (explicit destination)
+ *   <prefix> three          -> page 3 (explicit destination)
+ *   <prefix> site           -> a web address only (URI action)
+ */
+function buildBookmarkedPdf(prefix) {
+  // 1 catalog, 2 page tree, 3..8 three pages and their content, 9 font, 10 outline root, 11.. items.
+  const page = (n) => 3 + (n - 1) * 2;
+  const pages = [1, 2, 3].flatMap((n) => [
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents ${page(n) + 1} 0 R `
+      + '/Resources << /Font << /F1 9 0 R >> >> >>',
+    streamObject('', showText([{ text: `${prefix} page ${n}`, x: 72, y: 700 }])),
+  ]);
+  const item = (title, extra) => `<< /Title (${escapeText(title)}) /Parent 10 0 R ${extra} >>`;
+  return assemble([
+    '<< /Type /Catalog /Pages 2 0 R /Outlines 10 0 R /PageMode /UseOutlines >>',
+    `<< /Type /Pages /Kids [${page(1)} 0 R ${page(2)} 0 R ${page(3)} 0 R] /Count 3 >>`,
+    ...pages,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    '<< /Type /Outlines /First 11 0 R /Last 15 0 R /Count 4 >>',
+    item(`${prefix} one`, `/Dest [${page(1)} 0 R /Fit] /Next 12 0 R`),
+    item(`${prefix} two`, `/A << /S /GoTo /D [${page(2)} 0 R /Fit] >> /Prev 11 0 R /Next 14 0 R `
+      + '/First 13 0 R /Last 13 0 R /Count 1'),
+    `<< /Title (${escapeText(`${prefix} two point one`)}) /Parent 12 0 R `
+      + `/Dest [${page(2)} 0 R /XYZ null null null] >>`,
+    item(`${prefix} three`, `/Dest [${page(3)} 0 R /Fit] /Prev 12 0 R /Next 15 0 R`),
+    item(`${prefix} site`, '/A << /S /URI /URI (https://example.com/) >> /Prev 14 0 R'),
+  ]);
+}
+
+/**
+ * One page showing `lines`, encrypted the way 2.x-era files are: `cipher` under the standard
+ * security handler, an empty open password (so it opens without asking) and an owner password
+ * restricting it to printing. See legacy-encryption.js.
+ *
+ * @param {'AES-128'|'RC4-128'} cipher
+ */
+function buildRestrictedPdf(cipher, lines, ownerPassword = 'owner-only') {
+  const { standardSecurity, PRINT_ONLY } = require('./legacy-encryption');
+  const security = standardSecurity(cipher, { ownerPassword, permissions: PRINT_ONLY });
+  const content = security.encrypt(4, Buffer.from(showText(lines), 'latin1')).toString('latin1');
+  return assemble([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R '
+      + '/Resources << /Font << /F1 5 0 R >> >> >>',
+    streamObject('', content),
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    security.encryptDict,
+  ], `/Encrypt 6 0 R ${security.trailerId} `);
+}
+
 module.exports = {
   buildPdf, buildLeftoverCtmPdf, buildImagePdf, buildFormPdf, buildFormWithButtonScriptPdf,
   buildJavaScriptPdf,
   buildLinkPdf, buildJsLinkPdf, buildLinkOnPage2Pdf, buildLinkOverTextPdf, buildMultiLinkPdf,
+  buildNestedFormPdf, buildUndecodableContentPdf, buildUndeclaredFontPdf, buildBookmarkedPdf,
+  buildRestrictedPdf,
 };

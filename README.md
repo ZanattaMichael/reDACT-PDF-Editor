@@ -161,8 +161,19 @@ save, and undo.
 cd e2e
 npm install
 npx playwright install chromium   # once
-npx playwright test               # 138 tests
+npx playwright test               # 151 tests
 ```
+
+`tests/engine-v3.spec.js` checks what the 3.0 engine writes, not just what the viewer shows. Each
+test drives the UI, captures the file Save exports, and reads it with `helpers/pdf-inspect.js`, a
+small PDF reader that shares no code with the engine. A redaction through nested forms, or over a
+whole image, must leave no copy of the content anywhere in the file. Text in an undeclared font
+must be redactable, and a page that can't be decoded must be refused rather than wiped. Password
+protection must be AES-256 (revision 6) and print-only. AES-128 and RC4-128 files restricted to
+printing must still open and be edited without the owner password. Bookmarks must follow their
+pages through page removal and merging, and an opaque PNG must get no soft mask. A digital
+signature must cover the whole saved file and verify with OpenSSL. The producer must be
+`reDACT`, and the host bundle must contain no iText or BouncyCastle.
 
 Alongside the functional scenarios it covers the three states the extension can be in before it
 can do any work at all, because each is rendered by different code in a different context (the
