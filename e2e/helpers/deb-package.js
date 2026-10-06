@@ -16,20 +16,9 @@ const path = require('node:path');
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const PACKAGE_NAME = 'pdf-editor-host';
 
-// These commands are resolved against a fixed set of system directories rather than $PATH. This
-// suite runs them as root, and a $PATH entry anyone can write to would decide which binary that
-// is — the point of CWE-426, and something a test that installs packages should not be relaxed
-// about even on a throwaway CI machine.
-const SYSTEM_BIN_DIRS = ['/usr/bin', '/bin', '/usr/sbin', '/sbin'];
-
-/** Absolute path of a system command, or a clear error naming where it was looked for. */
-function systemBinary(name) {
-  const found = SYSTEM_BIN_DIRS
-    .map((dir) => path.join(dir, name))
-    .find((candidate) => fs.existsSync(candidate));
-  if (!found) throw new Error(`${name} is not in ${SYSTEM_BIN_DIRS.join(', ')}`);
-  return found;
-}
+// These commands run as root, so they are resolved against fixed system directories rather than
+// $PATH (CWE-426; see system-binary.js).
+const { systemBinary } = require('./system-binary');
 
 /** Runs a command as root, going through sudo when the test user is not already root. */
 function asRoot(command, args) {

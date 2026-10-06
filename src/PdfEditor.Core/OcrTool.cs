@@ -63,7 +63,9 @@ public static class OcrTool
                         (string.IsNullOrWhiteSpace(stderr) ? "" : $" {stderr.Trim()}"));
                 pages.Add(File.ReadAllBytes(outPdf));
             }
-            return Merger.Merge(pages);
+            // The searchable copy is built from page images, so it starts unencrypted; it is still
+            // the same document, and gets the source's encryption back.
+            return Encryptor.EncryptLike(Merger.Merge(pages), pdf, password);
         }
         finally { TryDelete(work); }
     }

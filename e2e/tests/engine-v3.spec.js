@@ -12,125 +12,33 @@
  */
 
 const { test, expect } = require('@playwright/test');
-const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
-const { launchExtension, REPO_ROOT } = require('../helpers/harness');
+const { REPO_ROOT } = require('../helpers/harness');
 const {
   buildPdf, buildImagePdf, buildNestedFormPdf, buildUndecodableContentPdf, buildUndeclaredFontPdf,
   buildBookmarkedPdf, buildRestrictedPdf,
 } = require('../helpers/pdf');
 const { readPdf, appearsAnywhere, nameOf, intOf, textOf, stringBytesOf } = require('../helpers/pdf-inspect');
+const { signedBytes, verifySignature } = require('../helpers/openssl');
+const { popplerText, popplerInfo } = require('../helpers/poppler');
 const {
-  pageImageSel, ui, dragPdfRect, fillDialog, expectText, expectCompactText, viewerSession,
+  ui, dragPdfRect, fillDialog, expectText, expectCompactText, applyRedaction, searchAndRedact,
+  extensionSuite,
 } = require('../helpers/viewer');
 
-/** @type {Awaited<ReturnType<typeof launchExtension>>} */
-let ext;
-let fixtureDir;
-
-test.beforeAll(async () => {
-  ext = await launchExtension();
-  fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pdf-editor-v3-'));
-});
-
-test.afterAll(async () => {
-  await ext?.close();
-  if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
-});
-
-const { openViewerWith, openCapturingViewerWith, writeCapturedExport } =
-  viewerSession(() => ext, () => fixtureDir);
-
-/** Writes `bytes` to `name` in the fixture directory and returns the path. */
-function writeFixture(name, bytes) {
-  const file = path.join(fixtureDir, name);
-  fs.writeFileSync(file, bytes);
-  return file;
-}
-
-/**
- * Presses Save and returns what it exported (see openCapturingViewerWith). Anything captured
- * earlier is dropped first: Save is not the only thing that goes through chrome.downloads
- * (creating a certificate saves the .p12 there), and the capture keeps whichever came last.
- */
-async function saveExport(page, name) {
-  await page.evaluate(() => { window.__saved = null; });
-  await page.click('#btn-save');
-  await expect(page.locator('#status')).toContainText('Saving via downloads');
-  const exported = await writeCapturedExport(page, name);
-  expect(exported.name).toMatch(/\.pdf$/);
-  return exported;
-}
-
-/** Applies the marked redactions and closes the report the viewer shows afterwards. */
-async function applyRedaction(page) {
-  await page.click('#redact-apply');
-  await expect(page.locator('#status')).toContainText('content removed');
-  const report = page.locator('dialog#modal');
-  await expect(report).toContainText('Redaction report');
-  await report.getByRole('button', { name: 'Close' }).click();
-  await expect(report).toBeHidden();
-}
-
-/** Marks every occurrence of `phrase` with the Redact panel's search, then applies. */
-async function searchAndRedact(page, phrase, expectedMarks) {
-  await ui(page, '#tool-redact');
-  await page.fill('#redact-search-text', phrase);
-  await page.click('#redact-search-btn');
-  await expect(page.locator('#redact-list li')).toHaveCount(expectedMarks);
-  await applyRedaction(page);
-}
+const session = extensionSuite(test, 'pdf-editor-v3-');
+const { openViewerWith, openCapturingViewerWith, saveExport, writeFixture } = session;
 
 /** Opens a password-protected file, answering the viewer's password prompt. */
-async function openProtectedViewerWith(file, password) {
-  const page = await ext.context.newPage();
-  await page.goto(ext.viewerUrl);
-  const chooser = page.waitForEvent('filechooser');
-  await page.click('#btn-open-empty');
-  await (await chooser).setFiles(file);
-  await expect(page.locator('dialog#modal')).toContainText('password-protected');
-  await fillDialog(page, [password], 'OK');
-  await expect(page.locator(pageImageSel(1))).toHaveAttribute('src', /data:image\/png/);
-  return page;
-}
-
-/** The length of the DER value at the start of `der`: a signature's /Contents is zero-padded. */
-function derLength(der) {
-  if (der[1] < 0x80) return 2 + der[1];
-  const lengthBytes = der[1] & 0x7f;
-  let length = 0;
-  for (let i = 0; i < lengthBytes; i++) length = length * 256 + der[2 + i];
-  return 2 + lengthBytes + length;
-}
-
-/**
- * Asks OpenSSL to verify a PDF signature over `signedBytes`: the CMS signature must match the
- * content, though the self-signed certificate is not checked against any trust store.
- * Returns OpenSSL's result and the subject of the signer's certificate.
- */
-function opensslVerify(signedBytes, contents, label) {
-  const dir = fs.mkdtempSync(path.join(fixtureDir, `${label}-`));
-  const sigFile = path.join(dir, 'signature.der');
-  const dataFile = path.join(dir, 'signed-bytes.bin');
-  const signerFile = path.join(dir, 'signer.pem');
-  fs.writeFileSync(sigFile, contents.subarray(0, derLength(contents)));
-  fs.writeFileSync(dataFile, signedBytes);
-  const verify = spawnSync('openssl', ['cms', '-verify', '-binary', '-inform', 'DER', '-in', sigFile,
-    '-content', dataFile, '-noverify', '-signer', signerFile, '-out', os.devNull], { encoding: 'utf8' });
-  const subject = verify.status === 0
-    ? spawnSync('openssl', ['x509', '-in', signerFile, '-noout', '-subject'], { encoding: 'utf8' }).stdout
-    : '';
-  return { status: verify.status, output: `${verify.stdout}${verify.stderr}`, subject };
-}
+const openProtectedViewerWith = (file, password) => openCapturingViewerWith(file, { password });
 
 test.describe('reDACT 3.0 engine, end to end (extension + native host)', () => {
   // ----------------------------------------------------------------- the engine swap itself
 
   test('the extension talks to a 3.0 host that ships without iText or BouncyCastle', async () => {
-    const page = await ext.context.newPage();
-    await page.goto(ext.optionsUrl);
+    const page = await session.ext.context.newPage();
+    await page.goto(session.ext.optionsUrl);
     await expect(page.locator('#host-status')).toContainText('✓ connected (host v3.');
     await page.close();
 
@@ -269,13 +177,15 @@ test.describe('reDACT 3.0 engine, end to end (extension + native host)', () => {
   });
 
   for (const cipher of ['AES-128', 'RC4-128']) {
-    test(`a ${cipher} file restricted to printing opens and is redacted without the owner password`, async () => {
+    test(`a ${cipher} file restricted to printing is redacted without the owner password, and stays restricted`, async () => {
       // A 2.x-era file: empty open password, owner password withholding everything but printing.
-      // 2.x edited these without asking for the owner password, and wrote the result unencrypted.
-      const file = writeFixture(`restricted-${cipher}.pdf`, buildRestrictedPdf(cipher, [
+      // 2.x edited these without asking for the owner password, and wrote the result unencrypted,
+      // which dropped the restrictions. The edit now keeps the file's own encryption.
+      const original = buildRestrictedPdf(cipher, [
         { text: 'LEGACY SECRETWORD', x: 72, y: 700 },
         { text: 'public words', x: 72, y: 600 },
-      ]));
+      ]);
+      const file = writeFixture(`restricted-${cipher}.pdf`, original);
       const page = await openCapturingViewerWith(file);
       await expectText(page).toContain('LEGACY SECRETWORD');
 
@@ -285,9 +195,17 @@ test.describe('reDACT 3.0 engine, end to end (extension + native host)', () => {
       const exported = await saveExport(page, `restricted-${cipher}-redacted.pdf`);
       await page.close();
 
-      expect(readPdf(exported.bytes).encrypt()).toBeNull();
+      // The same scheme, key and permissions, as poppler reads them...
+      const encrypt = readPdf(exported.bytes).encrypt();
+      expect(encrypt).not.toBeNull();
+      expect(stringBytesOf(encrypt, 'O')).toEqual(stringBytesOf(readPdf(original).encrypt(), 'O'));
+      expect(popplerInfo(exported.bytes, session.fixtureDir).Encrypted)
+        .toBe(popplerInfo(original, session.fixtureDir).Encrypted);
+      // ...and still no password to open it, with the redaction in it.
+      const text = popplerText(exported.bytes, session.fixtureDir);
+      expect(text).toContain('public words');
+      expect(text).not.toContain('SECRETWORD');
       expect(appearsAnywhere(exported.bytes, 'SECRETWORD')).toBe(false);
-      expect(appearsAnywhere(exported.bytes, 'public words')).toBe(true);
     });
   }
 
@@ -349,18 +267,15 @@ test.describe('reDACT 3.0 engine, end to end (extension + native host)', () => {
     expect(exported.bytes.subarray(firstLength, secondStart).toString('latin1'))
       .toMatch(/^<[0-9A-Fa-f]+>$/);
 
-    const signedBytes = Buffer.concat([
-      exported.bytes.subarray(start, firstLength),
-      exported.bytes.subarray(secondStart, secondStart + secondLength),
-    ]);
-    const verified = opensslVerify(signedBytes, contents, 'intact');
+    const content = signedBytes(exported.bytes, [start, firstLength, secondStart, secondLength]);
+    const verified = verifySignature(content, contents, session.fixtureDir);
     expect(verified.output).toContain('Verification successful');
     expect(verified.subject).toContain('V3 Signer');
 
     // The check has teeth: one changed byte in the signed content and verification fails.
-    const tampered = Buffer.from(signedBytes);
+    const tampered = Buffer.from(content);
     tampered[100] ^= 0x01;
-    expect(opensslVerify(tampered, contents, 'tampered').status).not.toBe(0);
+    expect(verifySignature(tampered, contents, session.fixtureDir).status).not.toBe(0);
 
     // Reopened from the saved file, the viewer reports the signature as valid.
     const reopened = await openViewerWith(exported.file);

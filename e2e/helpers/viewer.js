@@ -8,7 +8,9 @@
 
 const { expect } = require('@playwright/test');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const { launchExtension } = require('./harness');
 
 // In the continuous-scroll layout each page is `.page[data-page="N"]` with its own image.
 const pageImageSel = (n = 1) => `.page[data-page="${n}"] .page-image`;
@@ -29,17 +31,37 @@ async function ui(page, sel) {
   await page.click(sel);
 }
 
+/**
+ * Maps PDF user-space points on page `pageNum` to screen coordinates on its rendered image.
+ * Returns the mapping function; the page must be on screen.
+ */
+async function pdfToScreen(page, pageNum = 1, mediaBox = A4) {
+  const [llx, , urx, ury] = mediaBox;
+  const box = await page.locator(pageImageSel(pageNum)).boundingBox();
+  const scale = box.width / (urx - llx);
+  return ({ x, y }) => ({ x: box.x + (x - llx) * scale, y: box.y + (ury - y) * scale });
+}
+
 /** Drags a rectangle on the overlay, in PDF user-space coordinates. */
 async function dragPdfRect(page, { x, y, width, height }, mediaBox = A4) {
-  const [llx, , urx, ury] = mediaBox;
-  const box = await page.locator(pageImageSel(1)).boundingBox();
-  const scale = box.width / (urx - llx);
-  const cssX = (pdfX) => box.x + (pdfX - llx) * scale;
-  const cssY = (pdfY) => box.y + (ury - pdfY) * scale;
-  await page.mouse.move(cssX(x), cssY(y + height));
+  await dragPdf(page, { x, y: y + height }, { x: x + width, y }, { mediaBox });
+}
+
+/** Presses at `from`, moves to `to` in steps and releases, both PDF user-space points. */
+async function dragPdf(page, from, to, { pageNum = 1, mediaBox = A4 } = {}) {
+  const screen = await pdfToScreen(page, pageNum, mediaBox);
+  const start = screen(from);
+  const end = screen(to);
+  await page.mouse.move(start.x, start.y);
   await page.mouse.down();
-  await page.mouse.move(cssX(x + width), cssY(y), { steps: 5 });
+  await page.mouse.move(end.x, end.y, { steps: 8 });
   await page.mouse.up();
+}
+
+/** Clicks a PDF user-space point on page `pageNum`. */
+async function clickPdf(page, point, { pageNum = 1, mediaBox = A4 } = {}) {
+  const at = (await pdfToScreen(page, pageNum, mediaBox))(point);
+  await page.mouse.click(at.x, at.y);
 }
 
 /** Fills the promptDialog() form (inputs in creation order) and confirms. */
@@ -122,14 +144,76 @@ function expectCompactText(page, pageNum = 1) {
     { timeout: 20000 });
 }
 
+// ------------------------------------------------------- redaction
+
+/** Applies the marked redactions and closes the report the viewer shows afterwards. */
+async function applyRedaction(page) {
+  await page.click('#redact-apply');
+  await expect(page.locator('#status')).toContainText('content removed');
+  const report = page.locator('dialog#modal');
+  await expect(report).toContainText('Redaction report');
+  await report.getByRole('button', { name: 'Close' }).click();
+  await expect(report).toBeHidden();
+}
+
+/** Marks every occurrence of `phrase` with the Redact panel's search, then applies. */
+async function searchAndRedact(page, phrase, expectedMarks) {
+  await ui(page, '#tool-redact');
+  await page.fill('#redact-search-text', phrase);
+  await page.click('#redact-search-btn');
+  await expect(page.locator('#redact-list li')).toHaveCount(expectedMarks);
+  await applyRedaction(page);
+}
+
 // ------------------------------------------------------- opening documents and capturing exports
 
-/** Loads `file` through the viewer's Open button and waits for its first page to render. */
-async function openFile(page, file) {
+/**
+ * Loads `file` through the viewer's Open button and waits for its first page to render, answering
+ * the password prompt with `password` when one is given. An array answers it once per entry, in
+ * order, which is how a wrong password followed by the right one is entered.
+ */
+async function openFile(page, file, password) {
   const chooser = page.waitForEvent('filechooser');
   await page.click('#btn-open-empty');
   await (await chooser).setFiles(file);
+  await answerPasswordPrompts(page, password === undefined ? [] : [password].flat());
   await expect(page.locator(pageImageSel(1))).toHaveAttribute('src', /data:image\/png/);
+}
+
+/** Answers the password prompt with each of `answers` in turn: each one has to appear before the next. */
+async function answerPasswordPrompts(page, [answer, ...rest]) {
+  if (answer === undefined) return;
+  await expect(page.locator('dialog#modal')).toContainText('password-protected');
+  await fillDialog(page, [answer], 'OK');
+  await answerPasswordPrompts(page, rest);
+}
+
+/**
+ * Runs in the page (as an init script): wraps chrome.runtime.connectNative so the replies to the
+ * actions named in `delays` reach the page that many milliseconds late. Everything else, and the
+ * host itself, is untouched.
+ */
+function holdHostReplies(delays) {
+  const connect = chrome.runtime.connectNative.bind(chrome.runtime);
+  chrome.runtime.connectNative = (name) => {
+    const port = connect(name);
+    const held = new Map();
+    return {
+      postMessage(message) {
+        if (message.action in delays) held.set(message.id, delays[message.action]);
+        port.postMessage(message);
+      },
+      disconnect: () => port.disconnect(),
+      onDisconnect: port.onDisconnect,
+      onMessage: {
+        addListener: (listener) => port.onMessage.addListener((reply) => {
+          const delay = held.get(reply.id);
+          if (delay === undefined) listener(reply);
+          else setTimeout(() => listener(reply), delay);
+        }),
+      },
+    };
+  };
 }
 
 /**
@@ -153,10 +237,14 @@ function viewerSession(getExt, getFixtureDir) {
    * Opens a viewer page that captures whatever the Save button hands to chrome.downloads instead
    * of writing it out, so a test can inspect the actual exported bytes. The file-picker path is
    * removed first — it cannot be driven headlessly, and the downloads path is the fallback anyway.
+   *
+   * `slowHost` maps host actions to a delay in milliseconds: the host's reply to each is held that
+   * long before the page sees it, so a test can act while that request is still outstanding.
    */
-  async function openCapturingViewerWith(file) {
+  async function openCapturingViewerWith(file, { password, slowHost } = {}) {
     const ext = getExt();
     const page = await ext.context.newPage();
+    if (slowHost) await page.addInitScript(holdHostReplies, slowHost);
     await page.addInitScript(() => {
       delete window.showSaveFilePicker;
       window.__saved = null;
@@ -167,7 +255,7 @@ function viewerSession(getExt, getFixtureDir) {
       };
     });
     await page.goto(ext.viewerUrl);
-    await openFile(page, file);
+    await openFile(page, file, password);
     return page;
   }
 
@@ -181,11 +269,62 @@ function viewerSession(getExt, getFixtureDir) {
     return { file, name: saved.name, bytes: Buffer.from(saved.bytes) };
   }
 
-  return { openViewerWith, openCapturingViewerWith, writeCapturedExport };
+  /**
+   * Presses Save and returns what it exported (see openCapturingViewerWith). Anything captured
+   * earlier is dropped first: Save is not the only thing that goes through chrome.downloads
+   * (creating a certificate saves the .p12 there), and the capture keeps whichever came last.
+   */
+  async function saveExport(page, name) {
+    await page.evaluate(() => { window.__saved = null; });
+    await page.click('#btn-save');
+    await expect(page.locator('#status')).toContainText('Saving via downloads');
+    const exported = await writeCapturedExport(page, name);
+    expect(exported.name).toMatch(/\.pdf$/);
+    return exported;
+  }
+
+  /** Writes `bytes` to `name` in the fixture directory and returns the path. */
+  function writeFixture(name, bytes) {
+    const file = path.join(getFixtureDir(), name);
+    fs.writeFileSync(file, bytes);
+    return file;
+  }
+
+  return {
+    get ext() { return getExt(); },
+    get fixtureDir() { return getFixtureDir(); },
+    openViewerWith,
+    openCapturingViewerWith,
+    writeCapturedExport,
+    saveExport,
+    writeFixture,
+  };
+}
+
+/**
+ * Gives a spec its browser session: Chromium with the extension loaded and the freshly built host
+ * registered, plus a fixture directory, created before the spec's tests and removed after them.
+ * Returns the viewerSession helpers bound to that session.
+ *
+ * @param {import('@playwright/test').test} test
+ */
+function extensionSuite(test, prefix = 'pdf-editor-e2e-') {
+  let ext;
+  let fixtureDir;
+  test.beforeAll(async () => {
+    ext = await launchExtension();
+    fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  });
+  test.afterAll(async () => {
+    await ext?.close();
+    if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
+  });
+  return viewerSession(() => ext, () => fixtureDir);
 }
 
 module.exports = {
-  A4, pageImageSel, ui, dragPdfRect, fillDialog,
+  A4, pageImageSel, ui, pdfToScreen, dragPdfRect, dragPdf, clickPdf, fillDialog,
   textRuns, pageText, expectText, expectCompactText,
-  viewerSession,
+  applyRedaction, searchAndRedact,
+  viewerSession, extensionSuite,
 };

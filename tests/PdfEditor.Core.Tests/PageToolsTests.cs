@@ -160,15 +160,16 @@ public class PageToolsTests
     }
 
     [Fact]
-    public void Arrange_EncryptedSource_WorksWithPassword_AndDecryptsOutput()
+    public void Arrange_EncryptedSource_WorksWithPassword_AndStaysEncrypted()
     {
         byte[] locked = Encryptor.Encrypt(TestPdfs.MultiPage(3, "Secret"), "pw");
 
         var result = PageTools.Arrange(locked, new[] { 3, 1 }, "pw");
 
-        Assert.False(Encryptor.IsEncrypted(result.Pdf)); // the rebuilt copy is a fresh, open document
-        Assert.Contains("Secret 3", TestPdfAssert.ExtractText(result.Pdf, 1));
-        Assert.Contains("Secret 1", TestPdfAssert.ExtractText(result.Pdf, 2));
+        // Rebuilt from the source's pages, but still the same protected document.
+        Assert.True(Encryptor.IsEncrypted(result.Pdf));
+        Assert.Contains("Secret 3", TestPdfAssert.ExtractText(result.Pdf, 1, "pw"));
+        Assert.Contains("Secret 1", TestPdfAssert.ExtractText(result.Pdf, 2, "pw"));
     }
 
     [Fact]

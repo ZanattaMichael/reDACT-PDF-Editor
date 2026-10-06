@@ -86,8 +86,11 @@ function readEscape(text, i) {
   return { byte: LITERAL_ESCAPES[e] ?? e.codePointAt(0), next: i + 2 };
 }
 
-/** Decodes a literal string whose opening parenthesis is at `start`. */
-function literalString(text, start) {
+/**
+ * Decodes the literal string whose opening parenthesis is at `start`: its bytes, and the position
+ * just past its closing parenthesis.
+ */
+function readLiteral(text, start) {
   const out = [];
   let depth = 1;
   let i = start + 1;
@@ -103,8 +106,11 @@ function literalString(text, start) {
     out.push(text.codePointAt(i));
     i++;
   }
-  return Buffer.from(out);
+  return { bytes: Buffer.from(out), end: i + 1 };
 }
+
+/** Decodes a literal string whose opening parenthesis is at `start`. */
+const literalString = (text, start) => readLiteral(text, start).bytes;
 
 /** A text string's characters: UTF-16BE when it starts with a byte-order mark, else Latin-1. */
 function decodeText(bytes) {
@@ -321,13 +327,19 @@ function readPdf(bytes) {
     return [...objects.values()].filter((o) => o.raw).map(decodeStream);
   }
 
-  /** The signature dictionary (the one carrying a /ByteRange), or null. */
-  function signature() {
-    const sig = [...objects.values()].map((o) => o.dict).find((d) => /\/ByteRange\s*\[/.test(d));
-    if (!sig) return null;
-    const range = /\/ByteRange\s*\[\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*\]/.exec(sig).slice(1).map(Number);
-    return { dict: sig, byteRange: range, contents: stringBytesOf(sig, 'Contents') };
+  /** Every signature dictionary (one carrying a /ByteRange), in order of its byte range. */
+  function signatures() {
+    return [...objects.values()].map((o) => o.dict).filter((d) => /\/ByteRange\s*\[/.test(d))
+      .map((dict) => ({
+        dict,
+        byteRange: /\/ByteRange\s*\[\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*\]/.exec(dict).slice(1).map(Number),
+        contents: stringBytesOf(dict, 'Contents'),
+      }))
+      .sort((a, b) => a.byteRange[2] - b.byteRange[2]);
   }
+
+  /** The signature dictionary (the one carrying a /ByteRange), or null when there is none. */
+  const signature = () => signatures()[0] ?? null;
 
   return {
     objects,
@@ -339,6 +351,7 @@ function readPdf(bytes) {
     outline,
     streams,
     signature,
+    signatures,
     dictOf,
   };
 }
@@ -357,4 +370,5 @@ function appearsAnywhere(bytes, needle) {
 
 module.exports = {
   readPdf, appearsAnywhere, refOf, nameOf, intOf, textOf, stringBytesOf, decodeText,
+  decodeStream, readLiteral,
 };

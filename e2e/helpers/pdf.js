@@ -405,7 +405,75 @@ function buildRestrictedPdf(cipher, lines, ownerPassword = 'owner-only') {
   ], `/Encrypt 6 0 R ${security.trailerId} `);
 }
 
+/**
+ * One page with a 1x1 red inline image (BI … ID … EI) drawn into `rect`, plus `lines` of text.
+ * Inline images live inside the content stream itself, so a redaction has to drop the operator.
+ */
+function buildInlineImagePdf({ rect = [72, 500, 172, 600], lines = [] } = {}) {
+  const [llx, lly, urx, ury] = rect;
+  const content = `q ${urx - llx} 0 0 ${ury - lly} ${llx} ${lly} cm `
+    + `BI /W 1 /H 1 /CS /RGB /BPC 8 ID \xff\x00\x00 EI Q\n${showText(lines)}`;
+  return assemble([
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R '
+      + '/Resources << /Font << /F1 5 0 R >> >> >>',
+    streamObject('', content),
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ]);
+}
+
+/**
+ * One page carrying every kind of "hidden information" the sanitiser removes: authored /Info
+ * entries (standard and custom), an XMP packet, an embedded file, a JavaScript open action, a
+ * comment annotation, a bookmark, an optional-content layer, and a link that must survive.
+ */
+function buildHiddenInfoPdf() {
+  const xmp = '<x:xmpmeta xmlns:x="adobe:ns:meta/"><dc:creator>Hidden Author</dc:creator></x:xmpmeta>';
+  return assemble([
+    '<< /Type /Catalog /Pages 2 0 R /Metadata 6 0 R /Names << /EmbeddedFiles << /Names [(notes.txt) 7 0 R] >> >> '
+      + '/OpenAction << /S /JavaScript /JS (app.alert(1);) >> /Outlines 9 0 R '
+      + '/OCProperties << /OCGs [11 0 R] /D << /Order [11 0 R] >> >> >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R '
+      + '/Resources << /Font << /F1 5 0 R >> >> /Annots [12 0 R 13 0 R] >>',
+    streamObject('', showText([{ text: 'Shareable body text', x: 72, y: 700 }])),
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    streamObject('/Type /Metadata /Subtype /XML', xmp),
+    '<< /Type /Filespec /F (notes.txt) /EF << /F 8 0 R >> >>',
+    streamObject('/Type /EmbeddedFile', 'attached secret notes'),
+    '<< /Type /Outlines /First 10 0 R /Last 10 0 R /Count 1 >>',
+    '<< /Title (Hidden chapter) /Parent 9 0 R /Dest [3 0 R /Fit] >>',
+    '<< /Type /OCG /Name (Hidden layer) >>',
+    '<< /Type /Annot /Subtype /Text /Rect [400 700 420 720] /Contents (reviewer comment) >>',
+    '<< /Type /Annot /Subtype /Link /Rect [72 600 272 620] /Border [0 0 0] '
+      + '/A << /S /URI /URI (https://example.com/) >> >>',
+    '<< /Author (Hidden Author) /Title (Internal draft) /Subject (Secret subject) '
+      + '/Keywords (alpha, beta) /Creator (Draft tool) /Department (Legal) >>',
+  ], '/Info 14 0 R ');
+}
+
+/**
+ * One page with an AcroForm text field holding `value` and a square comment annotation that has
+ * its own appearance, for the flatten modes: forms, annotations, or everything.
+ */
+function buildFlattenPdf(value = 'Flattened value') {
+  const square = 'q 1 0 0 RG 2 w 2 2 96 46 re S Q';
+  return assemble([
+    '<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R] /DA (/Helv 0 Tf 0 g) /NeedAppearances true >> >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Annots [5 0 R 6 0 R] '
+      + '/Resources << /Font << /Helv 4 0 R >> >> >>',
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    `<< /FT /Tx /T (name) /V (${escapeText(value)}) /Type /Annot /Subtype /Widget `
+      + '/Rect [100 700 300 724] /P 3 0 R /DA (/Helv 12 Tf 0 g) >>',
+    '<< /Type /Annot /Subtype /Square /Rect [100 500 200 550] /C [1 0 0] /AP << /N 7 0 R >> >>',
+    streamObject('/Type /XObject /Subtype /Form /BBox [0 0 100 50]', square),
+  ]);
+}
+
 module.exports = {
+  buildInlineImagePdf, buildHiddenInfoPdf, buildFlattenPdf,
   buildPdf, buildLeftoverCtmPdf, buildImagePdf, buildFormPdf, buildFormWithButtonScriptPdf,
   buildJavaScriptPdf,
   buildLinkPdf, buildJsLinkPdf, buildLinkOnPage2Pdf, buildLinkOverTextPdf, buildMultiLinkPdf,

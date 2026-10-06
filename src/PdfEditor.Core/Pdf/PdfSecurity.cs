@@ -16,6 +16,9 @@ namespace PdfEditor.Core.Pdf;
 /// </summary>
 internal sealed class PdfSecurityHandler
 {
+    /// <summary>The crypt filter that leaves data as it is (§7.6.6), and the default where none is named.</summary>
+    private const string IdentityFilter = "Identity";
+
     private static readonly byte[] Padding =
     {
         0x28, 0xBF, 0x4E, 0x5E, 0x4E, 0x75, 0x8A, 0x41, 0x64, 0x00, 0x4E, 0x56, 0xFF, 0xFA, 0x01, 0x08,
@@ -102,8 +105,8 @@ internal sealed class PdfSecurityHandler
         if (v < 4) return (Cipher.Rc4, Cipher.Rc4);
         Cipher Lookup(PdfName key)
         {
-            var name = encrypt.GetAsName(key)?.Value ?? "Identity";
-            if (name == "Identity") return Cipher.None;
+            var name = encrypt.GetAsName(key)?.Value ?? IdentityFilter;
+            if (name == IdentityFilter) return Cipher.None;
             var cfm = encrypt.GetAsDictionary(PdfName.Of("CF"))?.GetAsDictionary(PdfName.Of(name))
                 ?.GetAsName(PdfName.Of("CFM"))?.Value;
             return cfm switch
@@ -256,6 +259,16 @@ internal sealed class PdfSecurityHandler
     }
 
     // ------------------------------------------------------------------ decrypting objects
+
+    /// <summary>
+    /// Whether a stream's data is stored unencrypted even though the document is encrypted: XMP
+    /// metadata when /EncryptMetadata is false, and a stream whose /Crypt filter names the Identity
+    /// filter. The reader leaves such data as it is, so the writer must write it as it is.
+    /// </summary>
+    public bool StoresInClear(PdfStream stream) =>
+        (!EncryptMetadata && stream.Is(PdfName.Metadata))
+        || (stream.FilterNames().Contains("Crypt")
+            && (stream.GetAsDictionary(PdfName.DecodeParms)?.GetAsName(PdfName.Name)?.Value ?? IdentityFilter) == IdentityFilter);
 
     /// <summary>Decrypts a string or stream body belonging to object <paramref name="number"/>.</summary>
     public byte[] DecryptString(byte[] data, int number, int generation) =>

@@ -120,6 +120,46 @@ public class TextFontFidelityTests
             + $"the original {span.Y:F2}; it should sit in-line with the surrounding text."));
     }
 
+    /// <summary>
+    /// The Edit tool lets a user drag any box around the words, not only the tight box the test
+    /// above selects. The replacement must still start where the original line did: it used to be
+    /// stamped at the dragged box's bottom-left corner, left of the line and below its baseline.
+    /// </summary>
+    [Fact]
+    public void ReplaceTextInRegion_FromALooseBox_StartsWhereTheOriginalLineDid()
+    {
+        byte[] pdf = TestPdfs.WithTextInFont("Helvetica", "ORIGINAL", 24f);
+        var span = Assert.Single(TextTools.GetTextSpans(pdf, 1));
+        var loose = new RectRegion(1, span.X - 15, span.Y - 12, span.Width + 60, span.Height + 24);
+
+        var result = TextTools.ReplaceTextInRegion(pdf, loose, "REPLACED");
+
+        var after = Assert.Single(TextTools.GetTextSpans(result.Pdf, 1));
+        Assert.Equal("REPLACED", after.Text);
+        Assert.True(Math.Abs(after.X - span.X) <= 1.5f && Math.Abs(after.Y - span.Y) <= 1.5f,
+            string.Create(CultureInfo.InvariantCulture,
+                $"Edited text starts at ({after.X:F2}, {after.Y:F2}); the original line started at "
+                + $"({span.X:F2}, {span.Y:F2})."));
+    }
+
+    /// <summary>A move from a loose box shifts the run by the drag, not to the box's corner.</summary>
+    [Fact]
+    public void MoveText_FromALooseBox_ShiftsTheRunByExactlyTheDelta()
+    {
+        byte[] pdf = TestPdfs.WithTextInFont("Helvetica", "MOVING", 24f);
+        var span = Assert.Single(TextTools.GetTextSpans(pdf, 1));
+        var loose = new RectRegion(1, span.X - 10, span.Y - 8, span.Width + 30, span.Height + 16);
+
+        var result = TextTools.MoveText(pdf, loose, dx: 40, dy: -120);
+
+        var after = Assert.Single(TextTools.GetTextSpans(result.Pdf, 1));
+        Assert.Equal("MOVING", after.Text);
+        Assert.True(Math.Abs(after.X - (span.X + 40)) <= 1.5f && Math.Abs(after.Y - (span.Y - 120)) <= 1.5f,
+            string.Create(CultureInfo.InvariantCulture,
+                $"Moved text starts at ({after.X:F2}, {after.Y:F2}); expected "
+                + $"({span.X + 40:F2}, {span.Y - 120:F2})."));
+    }
+
     /// <summary>Moving a run must not resize it either — it re-stamps at the detected size.</summary>
     [Fact]
     public void MoveText_PreservesTheTypeSize()

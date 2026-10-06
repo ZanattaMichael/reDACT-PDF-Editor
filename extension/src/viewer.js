@@ -84,6 +84,7 @@ const state = {
   // or a figure, so it stays available rather than being inferred.
   highlightMode: 'sweep',
   safety: null,         // { hasActiveContent, javaScriptCount, urlCount, samples }
+  safetyScan: null,     // the pending (or last) refreshSafety() — Save waits on it
   compareOther: null,   // { b64, name } — the last document compared against, kept for visual diff
   keepActiveContent: false, // false = strip JavaScript on save until the user opts in
   keepLinks: false,     // false = strip link URLs on save until the user enables them
@@ -478,7 +479,8 @@ async function loadDocument(bytes, fileName, { pushHistory = false, password } =
   }
   await showDocument();
   updateChrome();
-  Promise.all([refreshSignatures(), refreshSafety()]).then(() => {
+  // startScans() never rejects: each scan reports its own failure and leaves the state cleared.
+  void startScans().then(() => {
     updateChrome();
     if (freshOpen) warnActiveContent();
     refreshLinks(); // fetch, rate, and draw the clickable link hotspots
@@ -534,6 +536,17 @@ async function refreshSignatures() {
       `${e?.message ?? e} — the document will be shown as unsigned`);
     state.signatures = [];
   }
+}
+
+/**
+ * Starts the signature and active-content scans of the working document, which run after it is
+ * painted. Save waits for the active-content scan (state.safetyScan), because its result decides
+ * what Save strips: a Save pressed while it was still running found state.safety null and wrote
+ * the document's scripts and links out unstripped.
+ */
+function startScans() {
+  state.safetyScan = refreshSafety();
+  return Promise.all([refreshSignatures(), state.safetyScan]);
 }
 
 /** Scans for embedded JavaScript / URL actions so the UI can flag (and, by default, strip) them. */
@@ -2501,8 +2514,12 @@ function showMergeDialog(entries) {
     const chosen = order.map((i) => entries[i]);
     try {
       setStatus('Merging…', true);
+      // The document being edited goes with its password, so a protected one can be merged into
+      // (and keeps its encryption) rather than being refused for want of it.
       const result = await host.call('merge-files', {
-        files: chosen.map((e) => ({ data: e.data, kind: e.kind })),
+        files: chosen.map((e) => (e.base
+          ? { data: e.data, kind: e.kind, base: true, password: state.password ?? undefined }
+          : { data: e.data, kind: e.kind })),
       });
       const added = chosen.filter((e) => !e.base).length;
       await applyResult(result.pdf, `Merged ${added} file${added === 1 ? '' : 's'} in.`);
@@ -4154,6 +4171,7 @@ function printDocument() {
 async function save() {
   let bytes = state.pdf;
   activity.add('info', 'saving document', state.fileName);
+  await state.safetyScan; // what to strip is only known once the scan of this version is in
   const stripJs = state.safety?.javaScriptCount > 0 && !state.keepActiveContent;
   // URL scanning is off for now: leave link URLs untouched on save.
   const stripUrls = URL_SCANNING_ENABLED && state.safety?.urlCount > 0 && !state.keepLinks;
@@ -4220,7 +4238,7 @@ async function restore(snap, message) {
   state.safety = null;
   await showDocument();
   updateChrome();
-  Promise.all([refreshSignatures(), refreshSafety()]).then(updateChrome);
+  void startScans().then(updateChrome);
   toast(message);
 }
 

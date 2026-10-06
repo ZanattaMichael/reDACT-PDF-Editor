@@ -12,7 +12,10 @@ internal static class PdfIo
     /// <summary>Opens a document that will only be read. (The engine has one mode; this names the intent.)</summary>
     public static PdfDocument OpenReadOnly(byte[] pdf, string? password = null) => Open(pdf, password);
 
-    /// <summary>Writes the whole document afresh (unencrypted unless <paramref name="options"/> say otherwise).</summary>
+    /// <summary>
+    /// Writes the whole document afresh. An encrypted document stays encrypted the way it was,
+    /// unless <paramref name="options"/> replace or remove the encryption.
+    /// </summary>
     public static byte[] Save(PdfDocument doc, PdfSaveOptions? options = null) =>
         Guarded("saving the document", () => doc.Save(options));
 

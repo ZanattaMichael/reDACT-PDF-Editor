@@ -53,6 +53,25 @@ public class OcrToolTests
     }
 
     /// <summary>
+    /// The searchable copy is rebuilt from page images, so it starts out unencrypted. Made from a
+    /// protected document it must come back protected, under the same passwords.
+    /// </summary>
+    [Fact]
+    public void MakeSearchable_OfAProtectedDocument_IsProtectedTheSameWay()
+    {
+        if (!OcrTool.CanOcr) return; // covered by MakeSearchable_BehavesPerTesseractAvailability
+
+        byte[] locked = Encryptor.Encrypt(TestPdfs.WithText(("HELLO OCR WORLD", 72, 700, 24)), "user-pw", "owner-pw");
+
+        byte[] result = OcrTool.MakeSearchable(locked, "user-pw");
+
+        Assert.True(Encryptor.IsEncrypted(result));
+        Assert.True(Encryptor.CanOpen(result, "user-pw"));
+        Assert.True(Encryptor.CanOpen(result, "owner-pw"));
+        Assert.Contains("OCR", TestPdfAssert.ExtractText(result, 1, "user-pw").ToUpperInvariant());
+    }
+
+    /// <summary>
     /// Issue #21: the searchable copy must occupy the same page geometry as the original. The
     /// viewer lays every page out at (page points x zoom x 96/72), so a page that comes back
     /// larger than it went in is drawn proportionally larger — the "OCR results are zoomed in"
