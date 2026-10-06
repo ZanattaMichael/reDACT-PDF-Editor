@@ -50,11 +50,18 @@ function writeFixture(name, bytes) {
   return file;
 }
 
-/** Presses Save and returns what it exported (see openCapturingViewerWith). */
+/**
+ * Presses Save and returns what it exported (see openCapturingViewerWith). Anything captured
+ * earlier is dropped first: Save is not the only thing that goes through chrome.downloads
+ * (creating a certificate saves the .p12 there), and the capture keeps whichever came last.
+ */
 async function saveExport(page, name) {
+  await page.evaluate(() => { window.__saved = null; });
   await page.click('#btn-save');
   await expect(page.locator('#status')).toContainText('Saving via downloads');
-  return writeCapturedExport(page, name);
+  const exported = await writeCapturedExport(page, name);
+  expect(exported.name).toMatch(/\.pdf$/);
+  return exported;
 }
 
 /** Applies the marked redactions and closes the report the viewer shows afterwards. */
