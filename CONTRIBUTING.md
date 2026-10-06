@@ -156,8 +156,10 @@ numbers and the (documented, deliberate) gaps.
 
 ### Browser end-to-end tests
 
-If you touch the extension UI (`extension/src/`), run the Playwright suite — it loads
-the real extension into Chromium and drives it against the real native host:
+If you touch the extension UI (`extension/src/`) or the PDF engine (`src/PdfEditor.Core/`), run
+the Playwright suite — it loads the real extension into Chromium and drives it against the real
+native host. `tests/engine-v3.spec.js` also reads back the files Save exports, so it catches an
+engine change that leaves the page looking right and the file wrong:
 
 ```bash
 cd e2e
