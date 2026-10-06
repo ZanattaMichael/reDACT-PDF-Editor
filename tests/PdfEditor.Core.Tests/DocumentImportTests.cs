@@ -15,6 +15,14 @@ public class DocumentImportTests
         return data.ToArray();
     }
 
+    /// <summary>
+    /// A .docx cut off part-way through its zip, which no install of LibreOffice will load. A
+    /// complete <see cref="BuildDocx"/> is not enough for the "cannot convert" tests: LibreOffice
+    /// Writer converts it (and, falling back to plain text, even arbitrary bytes), so those tests
+    /// only held on machines where Writer was missing.
+    /// </summary>
+    private static byte[] UnloadableDocx() => BuildDocx("x")[..64];
+
     private static byte[] BuildDocx(string text)
     {
         using var ms = new MemoryStream();
@@ -97,7 +105,7 @@ public class DocumentImportTests
     {
         // The "word" alias hits the same LibreOffice path as "docx"; with unconvertible bytes it
         // must surface the same clear error rather than being treated as a passthrough PDF.
-        Assert.Throws<InvalidOperationException>(() => DocumentImport.ToPdf(BuildDocx("x"), "word"));
+        Assert.Throws<InvalidOperationException>(() => DocumentImport.ToPdf(UnloadableDocx(), "word"));
     }
 
     [Fact]
@@ -141,7 +149,7 @@ public class DocumentImportTests
         // Bytes that are not a loadable Word document. Whether LibreOffice is absent, or present
         // but unable to load the file, the caller gets a clear InvalidOperationException (with a
         // "convert to PDF first" hint when LibreOffice is missing) rather than a raw crash.
-        byte[] notADocx = BuildDocx("x"); // structurally incomplete; LibreOffice won't load it
+        byte[] notADocx = UnloadableDocx();
 
         var ex = Assert.Throws<InvalidOperationException>(() => DocumentImport.DocxToPdf(notADocx));
         Assert.False(string.IsNullOrWhiteSpace(ex.Message));

@@ -117,7 +117,7 @@ Requires the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
 
 ```bash
 dotnet build            # build everything
-dotnet test             # the whole .NET suite (652 tests: 470 + 136 unit, 17 integration, 29 perf)
+dotnet test             # the whole .NET suite (795 tests: 613 + 136 unit, 17 integration, 29 perf)
 ```
 
 - **`PdfEditor.Core.Tests`** — unit tests for the PDF engine (redaction, text editing,
@@ -161,7 +161,7 @@ save, and undo.
 cd e2e
 npm install
 npx playwright install chromium   # once
-npx playwright test               # 151 tests
+npx playwright test               # 236 tests
 ```
 
 `tests/engine-v3.spec.js` checks what the 3.0 engine writes, not just what the viewer shows. Each
@@ -174,6 +174,29 @@ printing must still open and be edited without the owner password. Bookmarks mus
 pages through page removal and merging, and an opaque PNG must get no soft mask. A digital
 signature must cover the whole saved file and verify with OpenSSL. The producer must be
 `reDACT`, and the host bundle must contain no iText or BouncyCastle.
+
+The `tests/v3-*.spec.js` files hold every user-facing feature to the same standard: drive it
+through the UI against the real host, save, and judge the exported file. `helpers/pdf-model.js`
+builds on the inspector to parse objects and content streams, so a test can ask what a page draws
+and where. It follows the transformation and text matrices, colours, blend states and line
+styles, decodes text through each font's ToUnicode map, and reads annotations, form fields,
+name trees and metadata. Signatures are checked by OpenSSL, which also makes the certificate one
+test signs with.
+
+| Spec | What it checks in the saved file |
+| --- | --- |
+| `v3-redaction` | Drawn and searched redactions remove the text, links, covered pixels and inline images, paint an opaque box, and leave other pages byte-for-byte the same; the compliance report carries both files' SHA-256 |
+| `v3-text` | Replacing text in a region keeps the original line's position and takes the chosen font, size, style and colour; find & replace, undo/redo, added text, and moved text and images |
+| `v3-markup` | Highlights (multiply blend, snapped or boxed), freehand strokes, drawn and uploaded signatures, watermarks (colour, opacity, angle), Bates numbers, and each flatten mode |
+| `v3-pages` | Rotation, page removal and reordering, merging documents, images and arrangements, and opening JPEG, PNG, GIF, BMP, WebP and TIFF files |
+| `v3-forms` | Every field type's AcroForm entries, flags, options, widget states, scripts and appearance streams, filled and flattened |
+| `v3-active-content` | Scripts and outward links stripped on save unless kept, document scripts added and removed, and each "Remove hidden information" category gone without a trace |
+| `v3-security-signing` | Removing encryption, owner and wrong passwords, signing twice, signing with an OpenSSL certificate, a wrong certificate password, tampering, and signing an encrypted file |
+| `v3-import-ocr` | A scan made searchable gets an invisible layer of its words over the unchanged picture; Word documents open and merge as text |
+
+`v3-import-ocr` needs [Tesseract](https://github.com/tesseract-ocr/tesseract) and LibreOffice
+Writer installed (`sudo apt install tesseract-ocr tesseract-ocr-eng libreoffice-writer-nogui`),
+as CI's `e2e` job does.
 
 Alongside the functional scenarios it covers the three states the extension can be in before it
 can do any work at all, because each is rendered by different code in a different context (the

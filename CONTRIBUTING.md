@@ -48,6 +48,10 @@ dependencies (Node packages + Playwright's bundled Chromium). Pass `-SkipE2E` /
   it for icon generation either way).
 - [Node.js 22+](https://nodejs.org/) — only needed for the Playwright end-to-end suite;
   everything else works without it.
+- Tesseract OCR and LibreOffice Writer — only needed for the end-to-end suite's
+  `tests/v3-import-ocr.spec.js`, which makes a scan searchable and converts Word documents
+  (on Debian/Ubuntu: `sudo apt install tesseract-ocr tesseract-ocr-eng libreoffice-writer-nogui`).
+  CI's `e2e` job installs both.
 
 Re-run either bootstrap script any time — both are idempotent.
 
