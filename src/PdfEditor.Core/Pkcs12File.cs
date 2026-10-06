@@ -173,10 +173,11 @@ internal static class Pkcs12File
         int iterations = Iterations(macData.Iterations);
         byte[] expected = macData.Mac.Digest.GetOctets();
         var encodings = password.Length == 0 ? new[] { false, true } : new[] { false };
-        foreach (bool wrongZero in encodings.Where(zero =>
-                     Arrays.FixedTimeEquals(Mac(algorithm, Pkcs12Password(password, zero), salt, iterations, authenticatedSafe), expected)))
-            return wrongZero;
-        throw new InvalidCipherTextException("The PKCS#12 MAC does not match: the password is wrong or the file is damaged.");
+        bool? matched = encodings
+            .Where(zero => Arrays.FixedTimeEquals(Mac(algorithm, Pkcs12Password(password, zero), salt, iterations, authenticatedSafe), expected))
+            .Select(zero => (bool?)zero)
+            .FirstOrDefault();
+        return matched ?? throw new InvalidCipherTextException("The PKCS#12 MAC does not match: the password is wrong or the file is damaged.");
     }
 
     // ------------------------------------------------------------------ the ciphers
