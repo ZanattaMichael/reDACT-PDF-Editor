@@ -44,7 +44,7 @@ function plain(value) {
 
 const isWhite = (c) => c === ' ' || c === '\n' || c === '\r' || c === '\t' || c === '\f' || c === '\0';
 const isDelimiter = (c) => '()<>[]{}/%'.includes(c);
-const NUMBER = /^[+-]?(\d+\.?\d*|\.\d+)$/;
+const NUMBER = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
 
 /** Splits PDF syntax into tokens: strings, names, numbers, keywords and the four brackets. */
 class Lexer {

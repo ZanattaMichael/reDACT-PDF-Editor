@@ -479,7 +479,8 @@ async function loadDocument(bytes, fileName, { pushHistory = false, password } =
   }
   await showDocument();
   updateChrome();
-  startScans().then(() => {
+  // startScans() never rejects: each scan reports its own failure and leaves the state cleared.
+  void startScans().then(() => {
     updateChrome();
     if (freshOpen) warnActiveContent();
     refreshLinks(); // fetch, rate, and draw the clickable link hotspots
@@ -4237,7 +4238,7 @@ async function restore(snap, message) {
   state.safety = null;
   await showDocument();
   updateChrome();
-  startScans().then(updateChrome);
+  void startScans().then(updateChrome);
   toast(message);
 }
 

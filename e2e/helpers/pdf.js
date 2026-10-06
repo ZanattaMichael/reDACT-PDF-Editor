@@ -432,7 +432,7 @@ function buildHiddenInfoPdf() {
   const xmp = '<x:xmpmeta xmlns:x="adobe:ns:meta/"><dc:creator>Hidden Author</dc:creator></x:xmpmeta>';
   return assemble([
     '<< /Type /Catalog /Pages 2 0 R /Metadata 6 0 R /Names << /EmbeddedFiles << /Names [(notes.txt) 7 0 R] >> >> '
-      + '/OpenAction << /S /JavaScript /JS (app.alert\(1\);) >> /Outlines 9 0 R '
+      + '/OpenAction << /S /JavaScript /JS (app.alert(1);) >> /Outlines 9 0 R '
       + '/OCProperties << /OCGs [11 0 R] /D << /Order [11 0 R] >> >> >>',
     '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
     '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R '

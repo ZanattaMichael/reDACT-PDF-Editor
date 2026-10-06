@@ -9,6 +9,7 @@
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { systemBinary, TOOL_DIRS } = require('./system-binary');
 
 /** Writes `bytes` to a fresh file under `workDir` and runs `tool` on it with `passwords`. */
 function runOn(tool, bytes, workDir, { user, owner } = {}, extra = []) {
@@ -17,7 +18,8 @@ function runOn(tool, bytes, workDir, { user, owner } = {}, extra = []) {
   const args = [...extra];
   if (user !== undefined) args.push('-upw', user);
   if (owner !== undefined) args.push('-opw', owner);
-  return spawnSync(tool, [...args, file, ...(tool === 'pdftotext' ? ['-'] : [])], { encoding: 'utf8' });
+  const output = tool === 'pdftotext' ? ['-'] : [];
+  return spawnSync(systemBinary(tool, TOOL_DIRS), [...args, file, ...output], { encoding: 'utf8' });
 }
 
 /**

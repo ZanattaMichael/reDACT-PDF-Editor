@@ -176,11 +176,16 @@ async function openFile(page, file, password) {
   const chooser = page.waitForEvent('filechooser');
   await page.click('#btn-open-empty');
   await (await chooser).setFiles(file);
-  for (const answer of password === undefined ? [] : [password].flat()) {
-    await expect(page.locator('dialog#modal')).toContainText('password-protected');
-    await fillDialog(page, [answer], 'OK');
-  }
+  await answerPasswordPrompts(page, password === undefined ? [] : [password].flat());
   await expect(page.locator(pageImageSel(1))).toHaveAttribute('src', /data:image\/png/);
+}
+
+/** Answers the password prompt with each of `answers` in turn: each one has to appear before the next. */
+async function answerPasswordPrompts(page, [answer, ...rest]) {
+  if (answer === undefined) return;
+  await expect(page.locator('dialog#modal')).toContainText('password-protected');
+  await fillDialog(page, [answer], 'OK');
+  await answerPasswordPrompts(page, rest);
 }
 
 /**

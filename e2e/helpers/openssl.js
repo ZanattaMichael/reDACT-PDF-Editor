@@ -9,6 +9,10 @@ const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { systemBinary, TOOL_DIRS } = require('./system-binary');
+
+/** OpenSSL, found in a fixed system directory rather than through $PATH. */
+const openssl = () => systemBinary('openssl', TOOL_DIRS);
 
 /** The length of the DER value at the start of `der`: a signature's /Contents is zero-padded. */
 function derLength(der) {
@@ -39,10 +43,10 @@ function verifySignature(content, contents, workDir) {
   const signerFile = path.join(dir, 'signer.pem');
   fs.writeFileSync(sigFile, contents.subarray(0, derLength(contents)));
   fs.writeFileSync(dataFile, content);
-  const verify = spawnSync('openssl', ['cms', '-verify', '-binary', '-inform', 'DER', '-in', sigFile,
+  const verify = spawnSync(openssl(), ['cms', '-verify', '-binary', '-inform', 'DER', '-in', sigFile,
     '-content', dataFile, '-noverify', '-signer', signerFile, '-out', os.devNull], { encoding: 'utf8' });
   const subject = verify.status === 0
-    ? spawnSync('openssl', ['x509', '-in', signerFile, '-noout', '-subject'], { encoding: 'utf8' }).stdout
+    ? spawnSync(openssl(), ['x509', '-in', signerFile, '-noout', '-subject'], { encoding: 'utf8' }).stdout
     : '';
   return { status: verify.status, output: `${verify.stdout}${verify.stderr}`, subject };
 }
@@ -57,7 +61,7 @@ function makePkcs12(workDir, commonName, password) {
   const cert = path.join(dir, 'cert.pem');
   const p12 = path.join(dir, 'identity.p12');
   const run = (args) => {
-    const r = spawnSync('openssl', args, { encoding: 'utf8' });
+    const r = spawnSync(openssl(), args, { encoding: 'utf8' });
     if (r.status !== 0) throw new Error(`openssl ${args[0]} failed: ${r.stderr}`);
   };
   run(['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert,
