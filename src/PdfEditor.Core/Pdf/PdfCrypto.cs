@@ -51,17 +51,17 @@ internal static class PdfCrypto
 
     /// <summary>AES-CBC encryption; with <paramref name="pad"/> the data is PKCS#7-padded, otherwise it must fill whole blocks.</summary>
     public static byte[] AesCbcEncrypt(byte[] key, byte[] iv, byte[] data, bool pad) =>
-        AesCbc(encrypt: true, key, iv, 0, data, 0, data.Length, pad);
+        AesCbc(encrypt: true, pad, new ParametersWithIV(new KeyParameter(key), iv), data, 0, data.Length);
 
     /// <summary>AES-CBC decryption of whole blocks, leaving any padding for the caller to judge.</summary>
     public static byte[] AesCbcDecrypt(byte[] key, byte[] iv, int ivOffset, byte[] data, int offset, int length) =>
-        AesCbc(encrypt: false, key, iv, ivOffset, data, offset, length, pad: false);
+        AesCbc(encrypt: false, pad: false, new ParametersWithIV(new KeyParameter(key), iv, ivOffset, 16), data, offset, length);
 
-    private static byte[] AesCbc(bool encrypt, byte[] key, byte[] iv, int ivOffset, byte[] data, int offset, int length, bool pad)
+    private static byte[] AesCbc(bool encrypt, bool pad, ParametersWithIV keyAndIv, byte[] data, int offset, int length)
     {
         var cbc = new CbcBlockCipher(AesUtilities.CreateEngine());
         var cipher = pad ? new PaddedBufferedBlockCipher(cbc, new Pkcs7Padding()) : new BufferedBlockCipher(cbc);
-        cipher.Init(encrypt, new ParametersWithIV(new KeyParameter(key), iv, ivOffset, 16));
+        cipher.Init(encrypt, keyAndIv);
         return cipher.DoFinal(data, offset, length);
     }
 

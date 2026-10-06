@@ -11,20 +11,21 @@ namespace PdfEditor.Tests;
 /// by accident — a package restored from muscle memory, a test helper copied from an old branch —
 /// so the guard checks the project files, the sources and the built assembly.
 /// </summary>
-public class DependencyLicenceGuardTests
+public partial class DependencyLicenceGuardTests
 {
     private const string BouncyCastle = "BouncyCastle.Cryptography";
 
-    private static readonly Regex PackageReference = new(@"<PackageReference\s+Include=""([^""]+)""", RegexOptions.IgnoreCase);
+    [GeneratedRegex(@"<PackageReference\s+Include=""([^""]+)""", RegexOptions.IgnoreCase)]
+    private static partial Regex PackageReference();
 
-    private static readonly Regex ForbiddenCode = new(
-        @"\busing\s+iText\b|\biText\.(Kernel|IO|Forms|Layout|Signatures|Commons|Bouncycastle|Pdfa|Pdfua|Svg|StyledXmlParser)\b");
+    [GeneratedRegex(@"\busing\s+iText\b|\biText\.(Kernel|IO|Forms|Layout|Signatures|Commons|Bouncycastle|Pdfa|Pdfua|Svg|StyledXmlParser)\b")]
+    private static partial Regex ForbiddenCode();
 
     [Fact]
     public void NoProjectReferencesITextOrAnotherBouncyCastlePackage()
     {
         var offenders = RepoFiles("*.csproj", "*.props", "*.targets")
-            .SelectMany(f => PackageReference.Matches(File.ReadAllText(f)).Select(m => (File: f, Package: m.Groups[1].Value)))
+            .SelectMany(f => PackageReference().Matches(File.ReadAllText(f)).Select(m => (File: f, Package: m.Groups[1].Value)))
             .Where(r => r.Package.Contains("itext", StringComparison.OrdinalIgnoreCase)
                         || (r.Package.Contains("bouncy", StringComparison.OrdinalIgnoreCase)
                             && !r.Package.Equals(BouncyCastle, StringComparison.OrdinalIgnoreCase)))
@@ -38,7 +39,7 @@ public class DependencyLicenceGuardTests
     public void NoSourceUsesIText()
     {
         var offenders = RepoFiles("*.cs")
-            .Where(f => ForbiddenCode.IsMatch(File.ReadAllText(f)))
+            .Where(f => ForbiddenCode().IsMatch(File.ReadAllText(f)))
             .Select(Relative)
             .ToList();
         Assert.True(offenders.Count == 0, "iText API used in: " + string.Join(", ", offenders));

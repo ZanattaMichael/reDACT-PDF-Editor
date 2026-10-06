@@ -1,4 +1,5 @@
 using System.Formats.Asn1;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Security.Cryptography.Pkcs;
 using System.Security.Cryptography.X509Certificates;
@@ -20,7 +21,7 @@ namespace PdfEditor.Tests;
 /// cover the cases where the two libraries have been seen to disagree: non-ASCII passwords, the
 /// legacy PKCS#12 ciphers, empty passwords, and keys that are not RSA.
 /// </summary>
-public class BouncyCastleInteropTests
+public partial class BouncyCastleInteropTests
 {
     private const string NonAscii = "pässwörd-ключ";
 
@@ -225,9 +226,10 @@ public class BouncyCastleInteropTests
     {
         byte[] signed = Signer.SignDigitally(TestPdfs.WithText(("contract body", 72, 700, 12)),
             CertificateFactory.CreateSelfSignedPkcs12("Alice", "pw"), "pw");
-        var match = Regex.Matches(Encoding.Latin1.GetString(signed), @"/ByteRange\s*\[\s*0\s+(\d+)\s+(\d+)\s+(\d+)\s*\]")[^1];
+        var match = ByteRange().Matches(Encoding.Latin1.GetString(signed))[^1];
         // The range is padded to a fixed width, so a longer number still fits in place.
-        string beyond = $"/ByteRange [0 {match.Groups[1].Value} {match.Groups[2].Value} {long.Parse(match.Groups[3].Value) + 1_000_000}]";
+        long beyondTheEnd = long.Parse(match.Groups[4].Value, CultureInfo.InvariantCulture) + 1_000_000;
+        string beyond = $"/ByteRange [0 {match.Groups[2].Value} {match.Groups[3].Value} {beyondTheEnd}]";
         Encoding.ASCII.GetBytes(beyond).CopyTo(signed, match.Index);
 
         var signature = Assert.Single(Signer.GetSignatures(signed));
@@ -279,11 +281,14 @@ public class BouncyCastleInteropTests
         return cms;
     }
 
+    [GeneratedRegex(@"/ByteRange\s*\[\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*\]")]
+    private static partial Regex ByteRange();
+
     /// <summary>The last /ByteRange, and where the hex digits of its /Contents lie.</summary>
     private static (long[] Range, int ContentsAt, int ContentsLength) SignaturePlace(byte[] pdf)
     {
-        var match = Regex.Matches(Encoding.Latin1.GetString(pdf), @"/ByteRange\s*\[\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*\]")[^1];
-        long[] range = Enumerable.Range(1, 4).Select(i => long.Parse(match.Groups[i].Value)).ToArray();
+        var match = ByteRange().Matches(Encoding.Latin1.GetString(pdf))[^1];
+        long[] range = Enumerable.Range(1, 4).Select(i => long.Parse(match.Groups[i].Value, CultureInfo.InvariantCulture)).ToArray();
         int contentsAt = (int)range[1] + 1; // after the '<'
         return (range, contentsAt, (int)(range[2] - range[1]) - 2);
     }
