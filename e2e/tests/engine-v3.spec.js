@@ -21,6 +21,7 @@ const {
 } = require('../helpers/pdf');
 const { readPdf, appearsAnywhere, nameOf, intOf, textOf, stringBytesOf } = require('../helpers/pdf-inspect');
 const { signedBytes, verifySignature } = require('../helpers/openssl');
+const { popplerText, popplerInfo } = require('../helpers/poppler');
 const {
   ui, dragPdfRect, fillDialog, expectText, expectCompactText, applyRedaction, searchAndRedact,
   extensionSuite,
@@ -176,13 +177,15 @@ test.describe('reDACT 3.0 engine, end to end (extension + native host)', () => {
   });
 
   for (const cipher of ['AES-128', 'RC4-128']) {
-    test(`a ${cipher} file restricted to printing opens and is redacted without the owner password`, async () => {
+    test(`a ${cipher} file restricted to printing is redacted without the owner password, and stays restricted`, async () => {
       // A 2.x-era file: empty open password, owner password withholding everything but printing.
-      // 2.x edited these without asking for the owner password, and wrote the result unencrypted.
-      const file = writeFixture(`restricted-${cipher}.pdf`, buildRestrictedPdf(cipher, [
+      // 2.x edited these without asking for the owner password, and wrote the result unencrypted,
+      // which dropped the restrictions. The edit now keeps the file's own encryption.
+      const original = buildRestrictedPdf(cipher, [
         { text: 'LEGACY SECRETWORD', x: 72, y: 700 },
         { text: 'public words', x: 72, y: 600 },
-      ]));
+      ]);
+      const file = writeFixture(`restricted-${cipher}.pdf`, original);
       const page = await openCapturingViewerWith(file);
       await expectText(page).toContain('LEGACY SECRETWORD');
 
@@ -192,9 +195,17 @@ test.describe('reDACT 3.0 engine, end to end (extension + native host)', () => {
       const exported = await saveExport(page, `restricted-${cipher}-redacted.pdf`);
       await page.close();
 
-      expect(readPdf(exported.bytes).encrypt()).toBeNull();
+      // The same scheme, key and permissions, as poppler reads them...
+      const encrypt = readPdf(exported.bytes).encrypt();
+      expect(encrypt).not.toBeNull();
+      expect(stringBytesOf(encrypt, 'O')).toEqual(stringBytesOf(readPdf(original).encrypt(), 'O'));
+      expect(popplerInfo(exported.bytes, session.fixtureDir).Encrypted)
+        .toBe(popplerInfo(original, session.fixtureDir).Encrypted);
+      // ...and still no password to open it, with the redaction in it.
+      const text = popplerText(exported.bytes, session.fixtureDir);
+      expect(text).toContain('public words');
+      expect(text).not.toContain('SECRETWORD');
       expect(appearsAnywhere(exported.bytes, 'SECRETWORD')).toBe(false);
-      expect(appearsAnywhere(exported.bytes, 'public words')).toBe(true);
     });
   }
 

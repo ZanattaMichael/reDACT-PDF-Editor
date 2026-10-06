@@ -93,13 +93,14 @@ jobs:
         # --no-install: the exact pinned version was just installed by `npm ci` above, so
         # this must resolve to that local binary and never fetch anything from the registry.
         run: npx --no-install playwright@1.61.1 install --with-deps chromium
-      - name: Install Tesseract OCR and LibreOffice Writer
-        # The host shells out to these for "Make searchable (OCR)" and for opening/merging Word
-        # documents; tests/v3-import-ocr.spec.js drives both and checks what they produce.
+      - name: Install Tesseract OCR, LibreOffice Writer and poppler
+        # The host shells out to Tesseract and LibreOffice for "Make searchable (OCR)" and for
+        # opening/merging Word documents; tests/v3-import-ocr.spec.js drives both. poppler
+        # (helpers/poppler.js) decrypts saved files independently of the engine.
         run: >-
           sudo apt-get update -qq &&
           sudo apt-get install -y -qq --no-install-recommends
-          tesseract-ocr tesseract-ocr-eng libreoffice-writer-nogui
+          tesseract-ocr tesseract-ocr-eng libreoffice-writer-nogui poppler-utils
       - name: Run Playwright suite (extension + native host)
         working-directory: e2e
         run: npx --no-install playwright@1.61.1 test

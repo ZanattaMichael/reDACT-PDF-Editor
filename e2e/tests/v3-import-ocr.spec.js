@@ -12,10 +12,13 @@ const { test, expect } = require('@playwright/test');
 const { buildPdf } = require('../helpers/pdf');
 const { SCAN_PNG } = require('../helpers/images');
 const { WORD_DOCX } = require('../helpers/office');
+const { readPdf } = require('../helpers/pdf-inspect');
 const { pdfModel, plain } = require('../helpers/pdf-model');
-const { ui, extensionSuite } = require('../helpers/viewer');
+const { popplerText } = require('../helpers/poppler');
+const { ui, fillDialog, extensionSuite } = require('../helpers/viewer');
 
-const { openCapturingViewerWith, saveExport, writeFixture } = extensionSuite(test, 'pdf-editor-import-');
+const session = extensionSuite(test, 'pdf-editor-import-');
+const { openCapturingViewerWith, saveExport, writeFixture } = session;
 
 const near = (value, expected, tolerance) => Math.abs(value - expected) < tolerance;
 
@@ -49,6 +52,25 @@ test.describe('OCR', () => {
     expect([x0, y0]).toEqual([0, 0]);
     expect(near(x1, 842, 0.5) && near(y1, 595, 0.5)).toBe(true);
     expect(model.drawnImages(1)).toHaveLength(1);
+  });
+});
+
+test.describe('OCR of a protected document', () => {
+  test('a protected scan made searchable is still protected, and its words read with the password', async () => {
+    // The searchable copy is rebuilt from page images, so it used to come back unencrypted.
+    const page = await openCapturingViewerWith(writeFixture('locked-scan.png', SCAN_PNG));
+    await ui(page, '#btn-protect');
+    await fillDialog(page, ['scan-pw', null], 'Encrypt');
+    await expect(page.locator('#status')).toContainText('encrypted');
+    await ui(page, '#btn-ocr');
+    await expect(page.locator('#status')).toContainText('searchable', { timeout: 90000 });
+    await expect(page.locator('#badges .badge.locked')).toBeVisible();
+    const exported = await saveExport(page, 'locked-scan-searchable.pdf');
+    await page.close();
+
+    expect(readPdf(exported.bytes).encrypt()).not.toBeNull();
+    expect(popplerText(exported.bytes, session.fixtureDir)).toBeNull();
+    expect(popplerText(exported.bytes, session.fixtureDir, { user: 'scan-pw' })).toContain('INVOICE 4471');
   });
 });
 

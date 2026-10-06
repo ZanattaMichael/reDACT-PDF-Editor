@@ -2,17 +2,23 @@
 
 /**
  * Passwords and signatures, end to end: removing encryption, opening with the owner password or
- * after a wrong one, signing (twice, and with a certificate made by OpenSSL), and what the viewer
- * says about a signed file that was changed afterwards. Encryption is read from the saved file's
- * trailer, and every signature is verified by OpenSSL over the bytes its /ByteRange names.
+ * after a wrong one, edits keeping a protected document encrypted, signing (twice, and with a
+ * certificate made by OpenSSL), and what the viewer says about a signed file that was changed
+ * afterwards. Encryption is read from the saved file's trailer and checked by poppler, which
+ * decrypts independently of the engine; every signature is verified by OpenSSL over the bytes
+ * its /ByteRange names.
  */
 
 const { test, expect } = require('@playwright/test');
 const { buildPdf } = require('../helpers/pdf');
-const { readPdf, appearsAnywhere } = require('../helpers/pdf-inspect');
+const { JPEG } = require('../helpers/images');
+const { readPdf, appearsAnywhere, stringBytesOf } = require('../helpers/pdf-inspect');
 const { pdfModel, plain } = require('../helpers/pdf-model');
 const { signedBytes, verifySignature, makePkcs12 } = require('../helpers/openssl');
-const { ui, fillDialog, expectText, extensionSuite } = require('../helpers/viewer');
+const { popplerText, popplerInfo } = require('../helpers/poppler');
+const {
+  ui, clickPdf, fillDialog, expectText, searchAndRedact, extensionSuite,
+} = require('../helpers/viewer');
 
 const session = extensionSuite(test, 'pdf-editor-security-');
 const { openViewerWith, openCapturingViewerWith, saveExport, writeFixture } = session;
@@ -102,6 +108,87 @@ test.describe('Passwords', () => {
   test('a protected file\'s content is not readable without the password', async () => {
     const encrypted = await protectedFile('opaque', buildPdf([[{ text: 'UNREADABLEWORD', x: 72, y: 700 }]]), 'pw');
     expect(appearsAnywhere(encrypted.bytes, 'UNREADABLEWORD')).toBe(false);
+  });
+});
+
+test.describe('Edits keep a protected document encrypted', () => {
+  /** The entries that fix a file's key, passwords and permissions, as hex; null when unencrypted. */
+  function protection(bytes) {
+    const encrypt = readPdf(bytes).encrypt();
+    return encrypt && ['O', 'U', 'OE', 'UE', 'Perms'].map((key) => stringBytesOf(encrypt, key).toString('hex'));
+  }
+
+  /** What poppler reads from `bytes` with `passwords`, whitespace removed; null when it cannot open it. */
+  const compactPoppler = (bytes, passwords) =>
+    popplerText(bytes, session.fixtureDir, passwords)?.replace(/\s+/g, '') ?? null;
+
+  test('edit after edit, the saved file stays encrypted under the passwords it was protected with', async () => {
+    // Every edit used to write the document out unencrypted while the badge still said
+    // "encrypted", so Save produced a plaintext copy of a document the user had protected.
+    const page = await openCapturingViewerWith(writeFixture('protect-then-edit.pdf', buildPdf([
+      [{ text: 'Agreement text', x: 72, y: 700 }, { text: 'CLASSIFIEDCLAUSE here', x: 72, y: 600 }],
+      [{ text: 'Appendix page', x: 72, y: 700 }],
+    ])));
+    await protect(page, 'user-pw', 'owner-pw');
+    const protectedOnly = await saveExport(page, 'protected-before-edits.pdf');
+
+    await ui(page, '#tool-text');
+    await clickPdf(page, { x: 72, y: 400 });
+    await page.fill('#edit-text', 'Added after protecting');
+    await page.click('#edit-apply');
+    await expect(page.locator('#status')).toContainText('Text added');
+    await ui(page, '#btn-watermark');
+    await fillDialog(page, ['DRAFTMARK'], 'Apply');
+    await expect(page.locator('#status')).toContainText('Watermark added');
+    await searchAndRedact(page, 'CLASSIFIEDCLAUSE', 1);
+    await ui(page, '#btn-rotate-right');
+    await expect(page.locator('#status')).toContainText('Rotated page 1');
+    await ui(page, '#btn-organize');
+    await page.locator('#organize-list .organize-item').nth(1).getByRole('button', { name: 'Move up' }).click();
+    await page.click('#organize-apply');
+    await expect(page.locator('#status')).toContainText('reorganized');
+    await expect(page.locator('#badges .badge.locked')).toBeVisible();
+    const exported = await saveExport(page, 'protected-after-edits.pdf');
+    await page.close();
+
+    // The same encryption the protection wrote: same key, passwords and permissions.
+    expect(protection(exported.bytes)).toEqual(protection(protectedOnly.bytes));
+    expect(popplerInfo(exported.bytes, session.fixtureDir, { user: 'user-pw' }).Encrypted).toContain('AES-256');
+    expect(compactPoppler(exported.bytes)).toBeNull();
+    expect(appearsAnywhere(exported.bytes, 'Added after protecting')).toBe(false);
+    // Either password opens it in another reader, which sees every edit.
+    for (const passwords of [{ user: 'user-pw' }, { owner: 'owner-pw' }]) {
+      const text = compactPoppler(exported.bytes, passwords);
+      expect(text).toContain('Addedafterprotecting');
+      expect(text).toContain('DRAFTMARK');
+      expect(text).not.toContain('CLASSIFIEDCLAUSE');
+      // Page 2 was moved first.
+      expect(text.indexOf('Appendixpage')).toBeLessThan(text.indexOf('Agreementtext'));
+    }
+    // And reopened in the viewer it asks for the password again.
+    const reopened = await openCapturingViewerWith(exported.file, { password: 'user-pw' });
+    await expectText(reopened).toContain('Appendix page');
+    await expect(reopened.locator('#badges .badge.locked')).toBeVisible();
+    await reopened.close();
+  });
+
+  test('a picture merged into a protected document keeps it encrypted (it used to be refused)', async () => {
+    const page = await openCapturingViewerWith(writeFixture('protect-then-merge.pdf', agreement()));
+    await protect(page, 'merge-pw');
+    const protectedOnly = await saveExport(page, 'protected-before-merge.pdf');
+    const chooser = page.waitForEvent('filechooser');
+    await ui(page, '#btn-merge');
+    await (await chooser).setFiles(writeFixture('merged-photo.jpg', JPEG));
+    await page.locator('dialog#modal').getByRole('button', { name: 'Merge' }).click();
+    await expect(page.locator('#status')).toContainText('Merged 1 file');
+    await expect(page.locator('#page-total')).toHaveText('2');
+    const exported = await saveExport(page, 'protected-merged.pdf');
+    await page.close();
+
+    expect(protection(exported.bytes)).toEqual(protection(protectedOnly.bytes));
+    expect(popplerInfo(exported.bytes, session.fixtureDir)).toBeNull();
+    expect(popplerInfo(exported.bytes, session.fixtureDir, { user: 'merge-pw' }).Pages).toBe('2');
+    expect(compactPoppler(exported.bytes, { user: 'merge-pw' })).toContain('Agreementtext');
   });
 });
 

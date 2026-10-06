@@ -17,7 +17,7 @@ so your documents never leave your machine.
 | ⬛ **Redaction** | Draw boxes over anything, or **Find & mark** text (by contains / starts-with / ends-with / whole word, case-insensitive by default). A **preview window** shows the result before you commit. Applying **permanently removes** the content underneath (text operators, image pixels, annotations) — not just covers it — then paints the box. A **Privacy** control defeats the box-length side channel — merge adjacent boxes, round widths, extend to the full line, or add a textured fill — set globally or per area. A downloadable **compliance report** lists what was removed per page and per region (with the removed text and image thumbnails) and flags any JavaScript or metadata that redaction leaves behind. |
 | 💾 **Save changes** | Save the edited document via the file picker or the downloads bar. Undo history while editing. |
 | 🧭 **Sits on top of browser PDF viewing** | Navigating to a `.pdf` opens the editor automatically (toggleable). Embedded PDF viewers on web pages get an “Edit in reDACT” overlay button, plus a toolbar button and right-click menu. Adobe sites and viewers are always left alone. |
-| 🔒 **Password protection** | AES-256 encryption with user/owner passwords; open, edit, and decrypt protected files. |
+| 🔒 **Password protection** | AES-256 encryption with user/owner passwords; open, edit, and decrypt protected files. Edits keep a protected file encrypted, in its own scheme and under its own passwords. |
 | 🖼 **Open images** | Open a PNG/JPEG/etc. directly — with the Open button or by **dragging it onto the window** — and it becomes a one-page PDF you can edit, OCR and merge like any document. |
 | ➕ **Merge & arrange** | Append PDFs, images, or Word documents; a **Merge & arrange** dialog lets you set the combine order (or drop files) before merging. Images are laid onto standard A4 pages. |
 | 🗂 **Organize pages** | Reorder pages by drag or ▲/▼ and delete the ones you don't need. |
@@ -117,7 +117,7 @@ Requires the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
 
 ```bash
 dotnet build            # build everything
-dotnet test             # the whole .NET suite (795 tests: 613 + 136 unit, 17 integration, 29 perf)
+dotnet test             # the whole .NET suite (822 tests: 639 + 137 unit, 17 integration, 29 perf)
 ```
 
 - **`PdfEditor.Core.Tests`** — unit tests for the PDF engine (redaction, text editing,
@@ -161,7 +161,7 @@ save, and undo.
 cd e2e
 npm install
 npx playwright install chromium   # once
-npx playwright test               # 236 tests
+npx playwright test               # 239 tests
 ```
 
 `tests/engine-v3.spec.js` checks what the 3.0 engine writes, not just what the viewer shows. Each
@@ -170,10 +170,10 @@ small PDF reader that shares no code with the engine. A redaction through nested
 whole image, must leave no copy of the content anywhere in the file. Text in an undeclared font
 must be redactable, and a page that can't be decoded must be refused rather than wiped. Password
 protection must be AES-256 (revision 6) and print-only. AES-128 and RC4-128 files restricted to
-printing must still open and be edited without the owner password. Bookmarks must follow their
-pages through page removal and merging, and an opaque PNG must get no soft mask. A digital
-signature must cover the whole saved file and verify with OpenSSL. The producer must be
-`reDACT`, and the host bundle must contain no iText or BouncyCastle.
+printing must still open and be edited without the owner password, and keep their restrictions.
+Bookmarks must follow their pages through page removal and merging, and an opaque PNG must get no
+soft mask. A digital signature must cover the whole saved file and verify with OpenSSL. The
+producer must be `reDACT`, and the host bundle must contain no iText or BouncyCastle.
 
 The `tests/v3-*.spec.js` files hold every user-facing feature to the same standard: drive it
 through the UI against the real host, save, and judge the exported file. `helpers/pdf-model.js`
@@ -191,12 +191,12 @@ test signs with.
 | `v3-pages` | Rotation, page removal and reordering, merging documents, images and arrangements, and opening JPEG, PNG, GIF, BMP, WebP and TIFF files |
 | `v3-forms` | Every field type's AcroForm entries, flags, options, widget states, scripts and appearance streams, filled and flattened |
 | `v3-active-content` | Scripts and outward links stripped on save unless kept, document scripts added and removed, and each "Remove hidden information" category gone without a trace |
-| `v3-security-signing` | Removing encryption, owner and wrong passwords, signing twice, signing with an OpenSSL certificate, a wrong certificate password, tampering, and signing an encrypted file |
-| `v3-import-ocr` | A scan made searchable gets an invisible layer of its words over the unchanged picture; Word documents open and merge as text |
+| `v3-security-signing` | Removing encryption, owner and wrong passwords, edits and merges keeping a protected file encrypted (checked with poppler), signing twice, signing with an OpenSSL certificate, a wrong certificate password, tampering, and signing an encrypted file |
+| `v3-import-ocr` | A scan made searchable gets an invisible layer of its words over the unchanged picture, and stays protected if it was; Word documents open and merge as text |
 
 `v3-import-ocr` needs [Tesseract](https://github.com/tesseract-ocr/tesseract) and LibreOffice
-Writer installed (`sudo apt install tesseract-ocr tesseract-ocr-eng libreoffice-writer-nogui`),
-as CI's `e2e` job does.
+Writer installed, and the encryption checks need poppler-utils (`sudo apt install tesseract-ocr
+tesseract-ocr-eng libreoffice-writer-nogui poppler-utils`), as CI's `e2e` job does.
 
 Alongside the functional scenarios it covers the three states the extension can be in before it
 can do any work at all, because each is rendered by different code in a different context (the
