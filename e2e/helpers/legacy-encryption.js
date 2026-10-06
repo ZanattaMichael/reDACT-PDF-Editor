@@ -110,6 +110,6 @@ function standardSecurity(cipher, { userPassword = '', ownerPassword, permission
  * restricted file withholds — modify (4), copy (5), annotate (6), fill (9), extract (10),
  * assemble (11), high-quality print (12) — clear, and the reserved bits as the standard requires.
  */
-const PRINT_ONLY = (0xfffff0c0 | 0b100) >> 0;
+const PRINT_ONLY = 0xfffff0c0 | 0b100; // a bitwise OR yields the signed 32-bit value, -3900
 
 module.exports = { standardSecurity, PRINT_ONLY };

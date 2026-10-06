@@ -22,7 +22,7 @@ const A4 = [0, 0, 595, 842];
 async function ui(page, sel) {
   const triggerId = await page.evaluate((s) => {
     const el = document.querySelector(s);
-    const menu = el && el.closest('.menu-group');
+    const menu = el?.closest('.menu-group');
     return menu ? menu.querySelector('.menu-trigger').id : null;
   }, sel);
   if (triggerId) await page.click('#' + triggerId);
@@ -85,13 +85,13 @@ async function textRuns(page, pageNum = 1) {
 async function pageText(page, pageNum = 1) {
   const runs = await textRuns(page, pageNum);
   const lines = [];
-  for (const run of [...runs].sort((a, b) => b.y - a.y)) {
+  for (const run of runs.toSorted((a, b) => b.y - a.y)) {
     const line = lines.find((l) => Math.abs(l.y - run.y) < Math.max(run.height, 1) * 0.6);
     if (line) line.runs.push(run);
     else lines.push({ y: run.y, runs: [run] });
   }
   return lines
-    .map((l) => l.runs.sort((a, b) => a.x - b.x).map((r) => r.text).join(' '))
+    .map((l) => l.runs.toSorted((a, b) => a.x - b.x).map((r) => r.text).join(' '))
     .join(' ');
 }
 

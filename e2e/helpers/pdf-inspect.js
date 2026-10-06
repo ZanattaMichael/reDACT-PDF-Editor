@@ -18,26 +18,36 @@ const keyPattern = (key) => `/${key}(?![A-Za-z0-9#])`;
 
 /** The value of `key` when it is an indirect reference, as an object number; else null. */
 function refOf(dict, key) {
-  const m = new RegExp(`${keyPattern(key)}\\s*(\\d+)\\s+\\d+\\s+R`).exec(dict);
+  const m = new RegExp(String.raw`${keyPattern(key)}\s*(\d+)\s+\d+\s+R`).exec(dict);
   return m ? Number(m[1]) : null;
 }
 
 /** The value of `key` when it is a name, without the slash; else null. */
 function nameOf(dict, key) {
-  const m = new RegExp(`${keyPattern(key)}\\s*/([^\\s/<>\\[\\]()]+)`).exec(dict);
+  const m = new RegExp(String.raw`${keyPattern(key)}\s*/([^\s/<>\[\]()]+)`).exec(dict);
   return m ? m[1] : null;
 }
 
 /** The value of `key` when it is an integer; else null. */
 function intOf(dict, key) {
-  const m = new RegExp(`${keyPattern(key)}\\s+(-?\\d+)(?![\\d.]|\\s+\\d+\\s+R)`).exec(dict);
+  const m = new RegExp(String.raw`${keyPattern(key)}\s+(-?\d+)(?![\d.]|\s+\d+\s+R)`).exec(dict);
   return m ? Number(m[1]) : null;
+}
+
+/** The object numbers of the `n g R` references in `text`, in order. */
+function referencesIn(text) {
+  const tokens = text.trim().split(/\s+/);
+  const refs = [];
+  for (let i = 2; i < tokens.length; i++) {
+    if (tokens[i] === 'R') refs.push(Number(tokens[i - 2]));
+  }
+  return refs;
 }
 
 /** The references listed in the array value of `key`, as object numbers. */
 function refsIn(dict, key) {
-  const m = new RegExp(`${keyPattern(key)}\\s*\\[([^\\]]*)\\]`).exec(dict);
-  return m ? [...m[1].matchAll(/(\d+)\s+\d+\s+R/g)].map((r) => Number(r[1])) : [];
+  const m = new RegExp(String.raw`${keyPattern(key)}\s*\[([^\]]*)\]`).exec(dict);
+  return m ? referencesIn(m[1]) : [];
 }
 
 /** The `<< … >>` starting at `start` in `text`, nested dictionaries included. */
@@ -54,11 +64,26 @@ function balancedDict(text, start) {
 
 const LITERAL_ESCAPES = { n: 10, r: 13, t: 9, b: 8, f: 12 };
 
+const PAREN_DEPTH = { '(': 1, ')': -1 };
+
 /** Reads the octal escape whose first digit is at `i`; returns its byte and where it ends. */
 function readOctal(text, i) {
   let j = i;
   while (j < i + 3 && /[0-7]/.test(text[j])) j++;
-  return { byte: parseInt(text.slice(i, j), 8) & 0xff, next: j };
+  return { byte: Number.parseInt(text.slice(i, j), 8) & 0xff, next: j };
+}
+
+/**
+ * Decodes the escape sequence whose backslash is at `i`: the byte it stands for (null for a line
+ * continuation, which stands for nothing) and where it ends.
+ */
+function readEscape(text, i) {
+  const e = text[i + 1];
+  if (e === undefined) return { byte: null, next: i + 1 };
+  if (/[0-7]/.test(e)) return readOctal(text, i + 1);
+  if (e === '\r' && text[i + 2] === '\n') return { byte: null, next: i + 3 };
+  if (e === '\r' || e === '\n') return { byte: null, next: i + 2 };
+  return { byte: LITERAL_ESCAPES[e] ?? e.codePointAt(0), next: i + 2 };
 }
 
 /** Decodes a literal string whose opening parenthesis is at `start`. */
@@ -66,23 +91,16 @@ function literalString(text, start) {
   const out = [];
   let depth = 1;
   let i = start + 1;
-  while (i < text.length && depth > 0) {
-    const c = text[i];
-    if (c === '\\') {
-      const e = text[i + 1];
-      if (/[0-7]/.test(e)) {
-        const { byte, next } = readOctal(text, i + 1);
-        out.push(byte);
-        i = next;
-        continue;
-      }
-      if (e === '\r' || e === '\n') i += (e === '\r' && text[i + 2] === '\n') ? 3 : 2;
-      else { out.push(LITERAL_ESCAPES[e] ?? e.charCodeAt(0)); i += 2; }
+  while (i < text.length) {
+    if (text[i] === '\\') {
+      const { byte, next } = readEscape(text, i);
+      if (byte !== null) out.push(byte);
+      i = next;
       continue;
     }
-    if (c === '(') depth++;
-    if (c === ')') depth--;
-    if (depth > 0) out.push(c.charCodeAt(0));
+    depth += PAREN_DEPTH[text[i]] ?? 0;
+    if (depth === 0) break;
+    out.push(text.codePointAt(i));
     i++;
   }
   return Buffer.from(out);
@@ -96,7 +114,7 @@ function decodeText(bytes) {
 
 /** The value of `key` when it is a string (literal or hex), as raw bytes; else null. */
 function stringBytesOf(dict, key) {
-  const m = new RegExp(`${keyPattern(key)}\\s*([(<])`).exec(dict);
+  const m = new RegExp(String.raw`${keyPattern(key)}\s*([(<])`).exec(dict);
   if (!m) return null;
   const at = m.index + m[0].length - 1;
   if (m[1] === '(') return literalString(dict, at);
@@ -112,31 +130,70 @@ function textOf(dict, key) {
   return bytes ? decodeText(bytes) : null;
 }
 
+const isDigit = (c) => c >= '0' && c <= '9';
+const isSpace = (c) => c === ' ' || c === '\n' || c === '\r' || c === '\t' || c === '\f';
+
+/** The digits that end just before `end` in `text`, and where they start; null if none. */
+function digitsBefore(text, end) {
+  let i = end;
+  while (i > 0 && isDigit(text[i - 1])) i--;
+  return i < end ? { value: Number(text.slice(i, end)), start: i } : null;
+}
+
+/** Where the run of whitespace ending at `end` begins: `end` itself when there is none. */
+function skipSpaceBack(text, end) {
+  let i = end;
+  while (i > 0 && isSpace(text[i - 1])) i--;
+  return i;
+}
+
+/**
+ * The object header (`n g obj`) whose keyword is at `at`, as { num, gen }, or null when the
+ * `obj` there is not one (the end of `endobj`, say).
+ */
+function headerAt(text, at) {
+  if (/[A-Za-z0-9]/.test(text[at + 3] ?? '')) return null;
+  const genEnd = skipSpaceBack(text, at);
+  if (genEnd === at) return null;
+  const gen = digitsBefore(text, genEnd);
+  if (!gen) return null;
+  const numEnd = skipSpaceBack(text, gen.start);
+  const num = numEnd < gen.start ? digitsBefore(text, numEnd) : null;
+  if (!num || (num.start > 0 && !isSpace(text[num.start - 1]))) return null;
+  return { num: num.value, gen: gen.value };
+}
+
+/**
+ * The body of the object whose header ends at `start`: its dictionary text, its stream's stored
+ * bytes (null when it has none), and where its `endobj` keyword starts. Null when it is unterminated.
+ */
+function objectBody(bytes, text, start) {
+  const endobj = text.indexOf('endobj', start);
+  if (endobj < 0) return null;
+  const streamAt = text.indexOf('stream', start);
+  if (streamAt < 0 || streamAt > endobj) return { dict: text.slice(start, endobj), raw: null, end: endobj };
+  const dict = text.slice(start, streamAt);
+  let dataStart = streamAt + 'stream'.length;
+  if (text[dataStart] === '\r') dataStart++;
+  if (text[dataStart] === '\n') dataStart++;
+  const endstream = text.indexOf('endstream', dataStart);
+  if (endstream < 0) return null;
+  const length = intOf(dict, 'Length');
+  const raw = bytes.subarray(dataStart, length === null ? endstream : dataStart + length);
+  const end = text.indexOf('endobj', endstream);
+  return end < 0 ? null : { dict, raw, end };
+}
+
 /** Splits a file into its indirect objects: { gen, dict, raw } by object number. */
 function topLevelObjects(bytes) {
   const text = bytes.toString('latin1');
   const objects = new Map();
-  const header = /(\d+)\s+(\d+)\s+obj\b/g;
-  let m;
-  while ((m = header.exec(text))) {
-    const start = m.index + m[0].length;
-    let end = text.indexOf('endobj', start);
-    if (end < 0) break;
-    const streamAt = text.indexOf('stream', start);
-    let dict = text.slice(start, end);
-    let raw = null;
-    if (streamAt >= 0 && streamAt < end) {
-      dict = text.slice(start, streamAt);
-      let dataStart = streamAt + 'stream'.length;
-      if (text[dataStart] === '\r') dataStart++;
-      if (text[dataStart] === '\n') dataStart++;
-      const length = intOf(dict, 'Length');
-      const endstream = text.indexOf('endstream', dataStart);
-      raw = bytes.subarray(dataStart, length !== null ? dataStart + length : endstream);
-      end = text.indexOf('endobj', endstream);
-    }
-    objects.set(Number(m[1]), { gen: Number(m[2]), dict, raw });
-    header.lastIndex = end;
+  let at = text.indexOf('obj');
+  while (at >= 0) {
+    const header = headerAt(text, at);
+    const body = header && objectBody(bytes, text, at + 3);
+    if (body) objects.set(header.num, { gen: header.gen, dict: body.dict, raw: body.raw });
+    at = text.indexOf('obj', body ? body.end + 'endobj'.length : at + 3);
   }
   return objects;
 }
@@ -169,7 +226,7 @@ function decodeStream(obj) {
 
 /** Adds the objects packed in each object stream, unless a top-level object replaces them. */
 function expandObjectStreams(objects) {
-  for (const obj of [...objects.values()]) {
+  for (const obj of objects.values()) {
     if (!obj.raw || nameOf(obj.dict, 'Type') !== 'ObjStm') continue;
     const data = decodeStream(obj).toString('latin1');
     const first = intOf(obj.dict, 'First');
@@ -186,7 +243,7 @@ function expandObjectStreams(objects) {
 function lastTrailer(text, objects) {
   const at = text.lastIndexOf('trailer');
   if (at >= 0) return balancedDict(text, text.indexOf('<<', at));
-  const xref = [...objects.values()].filter((o) => nameOf(o.dict, 'Type') === 'XRef').pop();
+  const xref = [...objects.values()].findLast((o) => nameOf(o.dict, 'Type') === 'XRef');
   return xref ? xref.dict : '';
 }
 
@@ -207,7 +264,7 @@ function readPdf(bytes) {
   function dictOf(dict, key) {
     const ref = refOf(dict, key);
     if (ref !== null) return dictAt(ref);
-    const m = new RegExp(`${keyPattern(key)}\\s*<<`).exec(dict);
+    const m = new RegExp(String.raw`${keyPattern(key)}\s*<<`).exec(dict);
     return m ? balancedDict(dict, m.index + m[0].length - 2) : null;
   }
 

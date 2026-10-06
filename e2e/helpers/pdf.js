@@ -285,7 +285,7 @@ function buildJsLinkPdf(script = 'window.close();') {
 
 // ------------------------------------------------------- fixtures for the 3.0 engine suite
 
-const escapeText = (t) => t.replace(/([\\()])/g, '\\$1');
+const escapeText = (t) => t.replace(/([\\()])/g, String.raw`\$1`);
 
 /** A Helvetica text-showing block for each `{ text, x, y, size }` line. */
 const showText = (lines, font = 'F1') => lines
@@ -366,6 +366,7 @@ function buildBookmarkedPdf(prefix) {
     streamObject('', showText([{ text: `${prefix} page ${n}`, x: 72, y: 700 }])),
   ]);
   const item = (title, extra) => `<< /Title (${escapeText(title)}) /Parent 10 0 R ${extra} >>`;
+  const childTitle = escapeText(`${prefix} two point one`);
   return assemble([
     '<< /Type /Catalog /Pages 2 0 R /Outlines 10 0 R /PageMode /UseOutlines >>',
     `<< /Type /Pages /Kids [${page(1)} 0 R ${page(2)} 0 R ${page(3)} 0 R] /Count 3 >>`,
@@ -375,7 +376,7 @@ function buildBookmarkedPdf(prefix) {
     item(`${prefix} one`, `/Dest [${page(1)} 0 R /Fit] /Next 12 0 R`),
     item(`${prefix} two`, `/A << /S /GoTo /D [${page(2)} 0 R /Fit] >> /Prev 11 0 R /Next 14 0 R `
       + '/First 13 0 R /Last 13 0 R /Count 1'),
-    `<< /Title (${escapeText(`${prefix} two point one`)}) /Parent 12 0 R `
+    `<< /Title (${childTitle}) /Parent 12 0 R `
       + `/Dest [${page(2)} 0 R /XYZ null null null] >>`,
     item(`${prefix} three`, `/Dest [${page(3)} 0 R /Fit] /Prev 12 0 R /Next 15 0 R`),
     item(`${prefix} site`, '/A << /S /URI /URI (https://example.com/) >> /Prev 14 0 R'),
