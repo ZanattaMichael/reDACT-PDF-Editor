@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Security.Cryptography;
 using System.Text;
 
 namespace PdfEditor.Core.Pdf;
@@ -211,7 +210,7 @@ internal sealed partial class PdfDocument
     /// </summary>
     private PdfArray NewId()
     {
-        byte[] fresh = RandomNumberGenerator.GetBytes(16);
+        byte[] fresh = PdfCrypto.RandomBytes(16);
         byte[] first = Trailer.GetAsArray(PdfName.ID)?.GetAsString(0)?.Bytes is { Length: > 0 } existing ? existing : fresh;
         return new PdfArray(new PdfObject[] { new PdfString(first, isHex: true), new PdfString(fresh, isHex: true) });
     }

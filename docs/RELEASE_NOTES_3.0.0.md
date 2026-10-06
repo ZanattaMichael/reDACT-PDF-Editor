@@ -1,8 +1,9 @@
 # reDACT PDF Editor 3.0.0
 
 3.0 replaces the PDF library under every edit. Through 2.x, reDACT read and wrote PDFs with
-iText, which is AGPL-licensed and pulled in BouncyCastle for its cryptography. 3.0 does that
-work with its own engine instead, so reDACT no longer depends on either (#170, #115). Everything
+iText, which is AGPL-licensed and reached BouncyCastle for its cryptography through an AGPL
+adapter. 3.0 does that work with its own engine instead, so reDACT no longer depends on iText
+(#170, #115), and uses BouncyCastle, which is MIT-licensed, directly. Everything
 you could do in 2.x still works, and everything you do produces the same result unless it is
 listed under *What behaves differently* below.
 
@@ -10,8 +11,9 @@ listed under *What behaves differently* below.
 
 - **No AGPL dependency.** reDACT is GPL-3.0 as before, with no AGPL component left in the
   distribution. That clears the way for anyone who could not ship or deploy reDACT because of
-  iText's licence. BouncyCastle is gone as well. Signing and certificate generation now use
-  .NET's built-in cryptography.
+  iText's licence. All of the cryptography (encryption, signing, certificate generation) is
+  BouncyCastle, used directly rather than through iText's adapter. It is fully managed, so it
+  works the same on every platform, whatever the system's own crypto libraries allow.
 - **Your files no longer advertise the library.** iText stamped its own name and version into
   the `/Producer` field of every file it saved. Files saved by 3.0 just say `reDACT`.
 - **Smaller output.** The engine writes only the objects a document still uses. An opaque PNG
@@ -80,7 +82,13 @@ These are deliberate, and each one is pinned by a test or a golden recording.
 - `PdfiumCrossCheckTests` checks the engine against PDFium, which shares no code with it. PDFium's
   ink for each glyph must fall inside the box the engine reports, and every kind of file the
   writer produces must render in PDFium.
-- `DependencyLicenceGuardTests` fails the build if iText or BouncyCastle is referenced again.
+- `DependencyLicenceGuardTests` fails the build if iText (or its BouncyCastle adapter) is referenced
+  again, if a BouncyCastle package other than `BouncyCastle.Cryptography` is added, or if `src/`
+  uses .NET's own cryptography instead of BouncyCastle.
+- PKCS#12 files are read and written by `Pkcs12File`, not BouncyCastle's `Pkcs12Store`. The store
+  encodes a PBES2 password as Latin-1, where OpenSSL, .NET and Java use UTF-8. With it, an
+  AES-protected certificate whose password is not ASCII would not open. `BouncyCastleInteropTests`
+  check the signing path against .NET's own CMS and PKCS#12.
 - The browser end-to-end suite (`e2e/tests/v3-*.spec.js`) drives every feature through the viewer
   against the real host and checks the saved file with readers that share no code with the
   engine. Its OCR, Word and encryption tests need Tesseract, LibreOffice Writer and poppler-utils

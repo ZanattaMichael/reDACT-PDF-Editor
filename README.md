@@ -117,7 +117,7 @@ Requires the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
 
 ```bash
 dotnet build            # build everything
-dotnet test             # the whole .NET suite (827 tests: 644 + 137 unit, 17 integration, 29 perf)
+dotnet test             # the whole .NET suite (841 tests: 658 + 137 unit, 17 integration, 29 perf)
 ```
 
 - **`PdfEditor.Core.Tests`** — unit tests for the PDF engine (redaction, text editing,
@@ -145,8 +145,7 @@ every push, gated at 90%; current coverage is **96% lines / 99% methods** overal
 (`PdfEditor.Core` at 98%, `PdfEditor.NativeHost`'s dispatcher at 100%). The remaining gaps
 are deliberately-defensive code that's impractical to hit without corrupting internal
 state: an encoding-mismatch fallback in `ContentStreamEditor` for text-extraction edge
-cases no known encoder produces, two best-effort certificate-field parsing catches in
-`Signer`, and `NativeHost`'s `Program.cs` entry point (exercised as a real process by the
+cases no known encoder produces, and `NativeHost`'s `Program.cs` entry point (exercised as a real process by the
 integration tests, which coverage instrumentation can't see across a process boundary).
 
 ### Browser end-to-end tests (Playwright)
@@ -161,7 +160,7 @@ save, and undo.
 cd e2e
 npm install
 npx playwright install chromium   # once
-npx playwright test               # 240 tests
+npx playwright test               # 241 tests
 ```
 
 `tests/engine-v3.spec.js` checks what the 3.0 engine writes, not just what the viewer shows. Each
@@ -173,7 +172,8 @@ protection must be AES-256 (revision 6) and print-only. AES-128 and RC4-128 file
 printing must still open and be edited without the owner password, and keep their restrictions.
 Bookmarks must follow their pages through page removal and merging, and an opaque PNG must get no
 soft mask. A digital signature must cover the whole saved file and verify with OpenSSL. The
-producer must be `reDACT`, and the host bundle must contain no iText or BouncyCastle.
+producer must be `reDACT`, and the host bundle must contain no iText, with BouncyCastle as its
+only cryptography library.
 
 The `tests/v3-*.spec.js` files hold every user-facing feature to the same standard: drive it
 through the UI against the real host, save, and judge the exported file. `helpers/pdf-model.js`
@@ -191,7 +191,7 @@ test signs with.
 | `v3-pages` | Rotation, page removal and reordering, merging documents, images and arrangements, and opening JPEG, PNG, GIF, BMP, WebP and TIFF files, with every page of a multi-page TIFF |
 | `v3-forms` | Every field type's AcroForm entries, flags, options, widget states, scripts and appearance streams, filled and flattened |
 | `v3-active-content` | Scripts and outward links stripped on save unless kept, document scripts added and removed, and each "Remove hidden information" category gone without a trace |
-| `v3-security-signing` | Removing encryption, owner and wrong passwords, edits and merges keeping a protected file encrypted (checked with poppler), signing twice, signing with an OpenSSL certificate, a wrong certificate password, tampering, and signing an encrypted file |
+| `v3-security-signing` | Removing encryption, owner and wrong passwords, edits and merges keeping a protected file encrypted (checked with poppler), signing twice, signing with OpenSSL certificates (one under a non-ASCII password), a wrong certificate password, tampering, and signing an encrypted file |
 | `v3-import-ocr` | A scan made searchable gets an invisible layer of its words over the unchanged picture, and stays protected if it was; Word documents open and merge as text |
 
 `v3-import-ocr` needs [Tesseract](https://github.com/tesseract-ocr/tesseract) and LibreOffice
@@ -574,6 +574,6 @@ Python), the test suites, and PR expectations are covered in
 ## License
 
 GPL-3.0 (see `LICENSE`). Since 3.0 the PDF engine is reDACT's own code (it no longer uses
-iText or BouncyCastle); pages are rendered with
+iText), its cryptography is [BouncyCastle](https://www.bouncycastle.org/) (MIT), and pages are rendered with
 [PDFtoImage](https://github.com/sungaila/PDFtoImage)/PDFium. Third-party components and their
 licences are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

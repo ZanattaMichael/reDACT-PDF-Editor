@@ -27,8 +27,10 @@
 
   <ItemGroup>
     <PackageReference Include="PDFtoImage" Version="5.2.1" />
-    <!-- CMS (PKCS#7) signing and PKCS#12 building for digital signatures; Microsoft, MIT. -->
-    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="8.0.1" />
+    <!-- All of the engine's cryptography: the PDF security handler's ciphers and hashes, CMS
+         signing and verification, PKCS#12, and certificate generation. Fully managed, so it
+         behaves the same on every platform whatever the system's OpenSSL allows; MIT. -->
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.7.0" />
   </ItemGroup>
 
 </Project>

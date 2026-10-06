@@ -36,18 +36,21 @@ const openProtectedViewerWith = (file, password) => openCapturingViewerWith(file
 test.describe('reDACT 3.0 engine, end to end (extension + native host)', () => {
   // ----------------------------------------------------------------- the engine swap itself
 
-  test('the extension talks to a 3.0 host that ships without iText or BouncyCastle', async () => {
+  test('the extension talks to a 3.0 host that ships without iText, its cryptography BouncyCastle', async () => {
     const page = await session.ext.context.newPage();
     await page.goto(session.ext.optionsUrl);
     await expect(page.locator('#host-status')).toContainText('✓ connected (host v3.');
     await page.close();
 
-    // The host the options page just reached is this build: its folder holds the in-house engine
-    // and neither of the libraries 3.0 removed.
+    // The host the options page just reached is this build: its folder holds the in-house engine,
+    // none of iText (AGPL), and BouncyCastle (MIT) as the one cryptography library, used directly
+    // rather than through iText's adapter.
     const hostDir = path.join(REPO_ROOT, 'src', 'PdfEditor.NativeHost', 'bin', 'Release', 'net8.0');
     const files = fs.readdirSync(hostDir);
     expect(files).toContain('PdfEditor.Core.dll');
-    expect(files.filter((f) => /itext|bouncycastle/i.test(f))).toEqual([]);
+    expect(files.filter((f) => /itext/i.test(f))).toEqual([]);
+    expect(files.filter((f) => /bouncycastle/i.test(f))).toEqual(['BouncyCastle.Cryptography.dll']);
+    expect(files).not.toContain('System.Security.Cryptography.Pkcs.dll');
   });
 
   test('a saved file names reDACT as its producer, and nothing in it names iText', async () => {
