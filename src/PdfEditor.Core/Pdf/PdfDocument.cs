@@ -17,7 +17,8 @@ internal sealed partial class PdfDocument
     private readonly HashSet<int> _loading = new();
     private readonly Dictionary<int, ObjectStream> _objectStreams = new();
     private readonly List<int> _pendingObjectStreams = new();
-    private PdfSecurityHandler? _security;
+    private PdfSecurityHandler? _security;     // decrypts what is read from the source bytes
+    private PdfSecurityHandler? _saveSecurity; // encrypts what Save writes: the source's, or an adopted one
     private int _encryptObjectNumber = -1;
     private int _nextObjectNumber = 1;
     private int _originalObjectLimit;
@@ -459,6 +460,7 @@ internal sealed partial class PdfDocument
     private void SetUpSecurity(string? password)
     {
         _security = null;
+        _saveSecurity = null;
         _encryptObjectNumber = -1;
         var raw = Trailer.GetRaw(PdfName.Encrypt);
         if (raw == null) return;
@@ -472,6 +474,7 @@ internal sealed partial class PdfDocument
         _objects.Clear();
         if (keep != null) _objects[_encryptObjectNumber] = keep;
         _security = PdfSecurityHandler.Open(encrypt, id, password);
+        _saveSecurity = _security;
     }
 
     private void Decrypt(PdfObject obj, int number, int generation, int depth = 0)
@@ -484,11 +487,7 @@ internal sealed partial class PdfDocument
                 break;
             case PdfStream stream:
                 DecryptDictionaryEntries(stream, number, generation, depth);
-                bool isXref = stream.Is(PdfName.XRef);
-                bool isPlainMetadata = !_security.EncryptMetadata && stream.Is(PdfName.Metadata);
-                bool identityCrypt = stream.FilterNames().Contains("Crypt")
-                    && (stream.GetAsDictionary(PdfName.DecodeParms)?.GetAsName(PdfName.Name)?.Value ?? "Identity") == "Identity";
-                if (!isXref && !isPlainMetadata && !identityCrypt)
+                if (!stream.Is(PdfName.XRef) && !_security.StoresInClear(stream))
                     stream.SetRawDataPreservingLength(_security.DecryptStream(stream.RawData, number, generation));
                 break;
             case PdfDictionary dict:
@@ -516,6 +515,27 @@ internal sealed partial class PdfDocument
     }
 
     internal PdfSecurityHandler? Security => _security;
+
+    /// <summary>
+    /// Makes this document save encrypted exactly as <paramref name="source"/> is: under the same
+    /// security handler and key, with the same encryption dictionary and the same first file
+    /// identifier (the older schemes derive the key from it). The passwords that open the source
+    /// then open this document, and its permissions are the source's. For a document rebuilt from
+    /// an encrypted one, which would otherwise be written unencrypted. No-op when the source is not
+    /// encrypted.
+    /// <para>
+    /// Only saving changes. Objects this document has yet to load from its own bytes are read as
+    /// those bytes are: the adopted handler must not "decrypt" a plaintext source.
+    /// </para>
+    /// </summary>
+    public void AdoptEncryption(PdfDocument source)
+    {
+        if (source._saveSecurity is not { } security
+            || source.Trailer.GetAsDictionary(PdfName.Encrypt) is not { } encrypt) return;
+        _saveSecurity = security;
+        Trailer.Put(PdfName.Encrypt, encrypt);
+        if (source.Trailer.GetAsArray(PdfName.ID) is { } id) Trailer.Put(PdfName.ID, id);
+    }
 
     // ------------------------------------------------------------------ object access
 

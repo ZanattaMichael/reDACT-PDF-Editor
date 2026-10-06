@@ -102,14 +102,15 @@ public class SanitizerTests
     }
 
     [Fact]
-    public void Sanitize_EncryptedInput_WorksWithPassword()
+    public void Sanitize_EncryptedInput_WorksWithPassword_AndStaysEncrypted()
     {
         byte[] locked = Encryptor.Encrypt(TestPdfs.WithHiddenData(), "pw");
 
         byte[] cleaned = Sanitizer.Sanitize(locked, new SanitizeOptions(), "pw").Pdf;
 
-        Assert.Equal(0, Sanitizer.Inspect(cleaned).Attachments);
-        Assert.Contains("Visible content", TestPdfAssert.ExtractText(cleaned, 1));
+        Assert.True(Encryptor.IsEncrypted(cleaned));
+        Assert.Equal(0, Sanitizer.Inspect(cleaned, "pw").Attachments);
+        Assert.Contains("Visible content", TestPdfAssert.ExtractText(cleaned, 1, "pw"));
     }
 
     [Fact]

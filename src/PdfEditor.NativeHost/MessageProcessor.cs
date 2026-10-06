@@ -542,14 +542,17 @@ public static class MessageProcessor
 
     private static object MergeFilesAction(JsonObject p)
     {
-        // Each entry is { data: base64, kind: "pdf"|"image"|"docx" }; non-PDFs are converted first.
-        var pdfs = p["files"]!.AsArray().Select(n =>
-        {
-            var o = n!.AsObject();
-            byte[] data = Convert.FromBase64String(o["data"]!.GetValue<string>());
-            return DocumentImport.ToPdf(data, o["kind"]?.GetValue<string>() ?? "pdf");
-        }).ToList();
-        return new { pdf = Convert.ToBase64String(Merger.Merge(pdfs)) };
+        // Each entry is { data: base64, kind: "pdf"|"image"|"docx", password?, base? }; non-PDFs
+        // are converted first. "base" marks the document being edited, and "password" opens it.
+        var files = p["files"]!.AsArray().Select(n => n!.AsObject()).ToList();
+        var pdfs = files.Select(o => DocumentImport.ToPdf(
+            Convert.FromBase64String(o["data"]!.GetValue<string>()), o["kind"]?.GetValue<string>() ?? "pdf")).ToList();
+        var passwords = files.Select(o => o["password"]?.GetValue<string>()).ToList();
+        byte[] merged = Merger.Merge(pdfs, passwords);
+        // Merging into a protected document is an edit of it, so the result keeps its encryption.
+        int edited = files.FindIndex(o => o["base"]?.GetValue<bool>() == true);
+        if (edited >= 0) merged = Encryptor.EncryptLike(merged, pdfs[edited], passwords[edited]);
+        return new { pdf = Convert.ToBase64String(merged) };
     }
 
     // Converts a single non-PDF input (image or Word doc) to a PDF so it can be opened and edited

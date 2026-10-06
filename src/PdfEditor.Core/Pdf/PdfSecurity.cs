@@ -257,6 +257,16 @@ internal sealed class PdfSecurityHandler
 
     // ------------------------------------------------------------------ decrypting objects
 
+    /// <summary>
+    /// Whether a stream's data is stored unencrypted even though the document is encrypted: XMP
+    /// metadata when /EncryptMetadata is false, and a stream whose /Crypt filter names the Identity
+    /// filter. The reader leaves such data as it is, so the writer must write it as it is.
+    /// </summary>
+    public bool StoresInClear(PdfStream stream) =>
+        (!EncryptMetadata && stream.Is(PdfName.Metadata))
+        || (stream.FilterNames().Contains("Crypt")
+            && (stream.GetAsDictionary(PdfName.DecodeParms)?.GetAsName(PdfName.Name)?.Value ?? "Identity") == "Identity");
+
     /// <summary>Decrypts a string or stream body belonging to object <paramref name="number"/>.</summary>
     public byte[] DecryptString(byte[] data, int number, int generation) =>
         Decrypt(data, number, generation, _stringCipher);

@@ -372,6 +372,33 @@ public class NewActionsTests
     }
 
     [Fact]
+    public void MergeFiles_IntoAProtectedDocument_KeepsItProtected()
+    {
+        // The viewer sends the document being edited with "base" and its password. It used to send
+        // neither, so a merge into a protected document failed for want of the password.
+        string locked = Result(Handle("encrypt", new
+        {
+            pdf = TestPdf.Base64(TestPdf.OnePage("protected page")), userPassword = "pw",
+        }))["pdf"]!.GetValue<string>();
+
+        var r = Handle("merge-files", new
+        {
+            files = new object[]
+            {
+                new { data = locked, kind = "pdf", @base = true, password = "pw" },
+                new { data = OnePixelPng, kind = "image" },
+            },
+        });
+        Assert.True(Ok(r));
+        string merged = Result(r)["pdf"]!.GetValue<string>();
+
+        Assert.False(Ok(Handle("info", new { pdf = merged })));
+        var info = Handle("info", new { pdf = merged, pdfPassword = "pw" });
+        Assert.True(Result(info)["encrypted"]!.GetValue<bool>());
+        Assert.Equal(2, Result(info)["pageCount"]!.GetValue<int>());
+    }
+
+    [Fact]
     public void PageText_ReturnsRunsWithPositions()
     {
         var r = Handle("page-text", new { pdf = TestPdf.Base64(TestPdf.OnePage("hello world")), page = 1 });

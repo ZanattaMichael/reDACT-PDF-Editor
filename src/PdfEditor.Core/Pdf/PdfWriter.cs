@@ -7,8 +7,18 @@ namespace PdfEditor.Core.Pdf;
 /// <summary>How a document is written.</summary>
 internal sealed record PdfSaveOptions
 {
-    /// <summary>When set, the output is encrypted with AES-256 (revision 6) under these passwords.</summary>
+    /// <summary>
+    /// When set, the output is encrypted with AES-256 (revision 6) under these passwords, replacing
+    /// any encryption the document had.
+    /// </summary>
     public (string User, string Owner)? Encryption { get; init; }
+
+    /// <summary>
+    /// Write the output unencrypted even if the document is encrypted. Without this (or
+    /// <see cref="Encryption"/>) an encrypted document stays encrypted: in the same scheme, under
+    /// the same key, so the same passwords open it and the same permissions apply.
+    /// </summary>
+    public bool RemoveEncryption { get; init; }
 
     /// <summary>Stamp /ModDate and /Producer into the Info dictionary (what every editor does on save).</summary>
     public bool StampInfo { get; init; } = true;
@@ -38,8 +48,14 @@ internal sealed partial class PdfDocument
     /// <summary>
     /// Writes the whole document afresh: every object reachable from the trailer, renumbered
     /// densely, with a classic cross-reference table. Objects nothing refers to are not written —
-    /// which is what makes deleting a page or an annotation actually remove its bytes. The output
-    /// is unencrypted unless <see cref="PdfSaveOptions.Encryption"/> asks otherwise.
+    /// which is what makes deleting a page or an annotation actually remove its bytes.
+    /// <para>
+    /// An encrypted document is written encrypted, in its own scheme and under its own key, with
+    /// its own encryption dictionary and first file identifier: the passwords that opened it open
+    /// the output, and its permissions carry over. Editing a protected document used to write it
+    /// out unencrypted. <see cref="PdfSaveOptions.Encryption"/> replaces the encryption instead,
+    /// and <see cref="PdfSaveOptions.RemoveEncryption"/> drops it.
+    /// </para>
     /// </summary>
     public byte[] Save(PdfSaveOptions? options = null)
     {
@@ -48,7 +64,13 @@ internal sealed partial class PdfDocument
 
         PdfSecurityHandler? security = null;
         PdfDictionary? encryptDict = null;
-        if (options.Encryption is { } pw)
+        if (options.Encryption is null && !options.RemoveEncryption && _saveSecurity != null
+            && Trailer.GetAsDictionary(PdfName.Encrypt) is { } kept)
+        {
+            security = _saveSecurity;
+            encryptDict = kept;
+        }
+        else if (options.Encryption is { } pw)
         {
             (security, encryptDict) = PdfSecurityHandler.CreateAes256(pw.User, pw.Owner);
             // Revision 6 is ISO 32000-2's handler, published for 1.7 readers as Adobe extension level 8.
@@ -77,7 +99,8 @@ internal sealed partial class PdfDocument
         writer.Register(catalog);
         if (Info is { } infoDict) writer.Register(infoDict);
 
-        string version = encryptDict != null && string.CompareOrdinal(Version, "1.7") < 0 ? "1.7" : Version;
+        // A kept handler is one the document's own version already declares; only a new one may need more.
+        string version = options.Encryption != null && string.CompareOrdinal(Version, "1.7") < 0 ? "1.7" : Version;
         if (options.ObjectStreams)
         {
             if (encryptDict != null) throw new NotSupportedException("Object streams cannot be combined with encryption here.");
@@ -389,8 +412,8 @@ internal sealed partial class PdfDocument
             bool encrypt = _security != null && !Unencrypted.Contains(obj);
             if (obj is PdfStream stream)
             {
-                byte[] data = encrypt && !stream.Is(PdfName.XRef)
-                    ? _security!.Encrypt(stream.RawData, number, generation, isStream: true)
+                byte[] data = encrypt && !stream.Is(PdfName.XRef) && !_security!.StoresInClear(stream)
+                    ? _security.Encrypt(stream.RawData, number, generation, isStream: true)
                     : stream.RawData;
                 var dict = new PdfDictionary();
                 foreach (var key in stream.Keys)

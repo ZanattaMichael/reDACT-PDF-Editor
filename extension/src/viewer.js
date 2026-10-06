@@ -2513,8 +2513,12 @@ function showMergeDialog(entries) {
     const chosen = order.map((i) => entries[i]);
     try {
       setStatus('Merging…', true);
+      // The document being edited goes with its password, so a protected one can be merged into
+      // (and keeps its encryption) rather than being refused for want of it.
       const result = await host.call('merge-files', {
-        files: chosen.map((e) => ({ data: e.data, kind: e.kind })),
+        files: chosen.map((e) => (e.base
+          ? { data: e.data, kind: e.kind, base: true, password: state.password ?? undefined }
+          : { data: e.data, kind: e.kind })),
       });
       const added = chosen.filter((e) => !e.base).length;
       await applyResult(result.pdf, `Merged ${added} file${added === 1 ? '' : 's'} in.`);

@@ -7,11 +7,11 @@ using Xunit;
 namespace PdfEditor.Tests;
 
 /// <summary>
-/// Reading documents encrypted with the older standard security handlers: RC4 40-bit (R2),
-/// RC4 128-bit (R3) and AES-128 (R4). reDACT never writes these, but plenty of files in the wild
-/// still use them. The fixtures are encrypted here, by a separate implementation of the algorithms
-/// in ISO 32000-1 §7.6.3, so the handler is checked against the specification and not against
-/// itself.
+/// Documents encrypted with the older standard security handlers: RC4 40-bit (R2), RC4 128-bit
+/// (R3) and AES-128 (R4). reDACT never protects a document with these, but plenty of files in the
+/// wild use them, and editing one writes it back in its own scheme. The fixtures are encrypted
+/// here, by a separate implementation of the algorithms in ISO 32000-1 §7.6.3, so the handler is
+/// checked against the specification and not against itself.
 /// </summary>
 public class LegacyEncryptionTests
 {
@@ -65,16 +65,18 @@ public class LegacyEncryptionTests
 
     [Theory]
     [MemberData(nameof(Schemes))]
-    public void Redacting_RemovesTheText(string scheme)
+    public void Redacting_RemovesTheText_AndKeepsTheEncryption(string scheme)
     {
         byte[] pdf = LegacyPdf.Build(scheme, UserPassword, OwnerPassword);
         var hit = Assert.Single(TextTools.FindText(pdf, "Secret", password: UserPassword));
 
         var result = Redactor.Redact(pdf, new[] { new RectRegion(1, hit.X, hit.Y, hit.Width, hit.Height) }, UserPassword);
 
-        // As in 2.x, an edit writes the document without its old encryption; protecting the
-        // result is a separate, explicit step (Encryptor, always AES-256).
-        string text = TestPdfAssert.ExtractText(result.Pdf);
+        // The edit is written in the document's own scheme, under its own passwords. (2.x wrote it
+        // out unencrypted, leaving re-protection to a separate step that was easy to forget.)
+        Assert.True(Encryptor.IsEncrypted(result.Pdf));
+        Assert.True(Encryptor.CanOpen(result.Pdf, OwnerPassword));
+        string text = TestPdfAssert.ExtractText(result.Pdf, password: UserPassword);
         Assert.DoesNotContain("Secret", text);
         Assert.Contains("words", text);
     }
@@ -88,6 +90,50 @@ public class LegacyEncryptionTests
 
         var metadata = doc.Catalog!.GetAsStream(PdfName.Metadata)!;
         Assert.Contains("<x:xmpmeta", Encoding.ASCII.GetString(metadata.GetDecodedBytes()));
+        Assert.Contains("Secret words", LocationTextExtraction.ExtractPage(doc.GetPage(1)));
+    }
+
+    [Theory]
+    [MemberData(nameof(Schemes))]
+    public void AnEdit_IsWrittenInTheDocumentsOwnScheme_UnderItsOwnKey(string scheme)
+    {
+        byte[] pdf = LegacyPdf.Build(scheme, UserPassword, OwnerPassword);
+
+        byte[] edited = PageTools.Rotate(pdf, new[] { 1 }, 90, UserPassword).Pdf;
+
+        // The same /Encrypt entries and first file identifier: the key these schemes derive from
+        // them, the passwords and the permissions are all unchanged.
+        static string[] Protection(byte[] bytes)
+        {
+            var doc = PdfDocument.Open(bytes, OwnerPassword);
+            var e = doc.Trailer.GetAsDictionary(PdfName.Encrypt)!;
+            return new[]
+            {
+                $"V{e.GetAsInt(PdfName.Of("V"))} R{e.GetAsInt(PdfName.Of("R"))} P{e.GetAsNumber(PdfName.P)!.LongValue()}",
+                Convert.ToHexString(e.GetAsString(PdfName.Of("O"))!.Bytes),
+                Convert.ToHexString(e.GetAsString(PdfName.U)!.Bytes),
+                Convert.ToHexString(doc.Trailer.GetAsArray(PdfName.ID)!.GetAsString(0)!.Bytes),
+            };
+        }
+        Assert.Equal(Protection(pdf), Protection(edited));
+        Assert.Equal(90, PdfDocument.Open(edited, UserPassword).GetPage(1).Rotation);
+        Assert.Contains("Secret words", TestPdfAssert.ExtractText(edited, 1, OwnerPassword));
+        Assert.Throws<PdfPasswordException>(() => PdfDocument.Open(edited));
+    }
+
+    [Fact]
+    public void AnEdit_LeavesMetadataStoredInTheClear_InTheClear()
+    {
+        // With /EncryptMetadata false the XMP stream is plaintext in an encrypted file. Writing it
+        // back encrypted would leave readers, which take it as plaintext, holding ciphertext.
+        byte[] pdf = LegacyPdf.Build("AES-128", UserPassword, OwnerPassword, encryptMetadata: false);
+
+        byte[] edited = PageTools.Rotate(pdf, new[] { 1 }, 90, UserPassword).Pdf;
+
+        var doc = PdfDocument.Open(edited, UserPassword);
+        var metadata = doc.Catalog!.GetAsStream(PdfName.Metadata)!;
+        Assert.Contains("<x:xmpmeta", Encoding.ASCII.GetString(metadata.GetDecodedBytes()));
+        Assert.Contains("<x:xmpmeta", Encoding.Latin1.GetString(edited));
         Assert.Contains("Secret words", LocationTextExtraction.ExtractPage(doc.GetPage(1)));
     }
 

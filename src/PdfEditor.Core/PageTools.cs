@@ -32,6 +32,8 @@ public static class PageTools
         var pages = PdfIo.Guarded("copying pages", () => PdfImporter.CopyPages(source, order, target, outlines));
         target.SetPages(pages);
         PdfImporter.LinkOutlines(target, outlines);
+        // Rebuilt, but still the same document: it keeps the source's encryption.
+        target.AdoptEncryption(source);
         return EditResult.Of(PdfIo.Save(target));
     }
 

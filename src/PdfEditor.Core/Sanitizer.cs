@@ -42,21 +42,17 @@ public static class Sanitizer
     /// <summary>Removes the selected categories of hidden information and returns the cleaned PDF.</summary>
     public static EditResult Sanitize(byte[] pdf, SanitizeOptions options, string? password = null)
     {
-        // Scripts/actions are stripped by the (already-tested) safety pass first; its output is a
-        // fresh, unencrypted rewrite, so the remaining passes open it without a password.
-        byte[] working = pdf;
-        string? pw = password;
-        if (options.ScriptsAndActions)
-        {
-            working = PdfSafety.StripActive(working, javaScript: true, urls: true, pw).Pdf;
-            pw = null;
-        }
+        // Scripts/actions are stripped by the (already-tested) safety pass first. Its output keeps
+        // the document's encryption, so the remaining passes open it with the same password.
+        byte[] working = options.ScriptsAndActions
+            ? PdfSafety.StripActive(pdf, javaScript: true, urls: true, password).Pdf
+            : pdf;
 
         // The Info dictionary isn't reachable through the trailer once a writer is attached, so
         // discover any custom metadata keys read-only first and clear them by name below.
-        var customKeys = options.Metadata ? CustomInfoKeys(working, pw) : new List<string>();
+        var customKeys = options.Metadata ? CustomInfoKeys(working, password) : new List<string>();
 
-        var doc = PdfIo.Open(working, pw);
+        var doc = PdfIo.Open(working, password);
         var catalog = doc.Catalog!;
         if (options.Metadata) StripMetadata(doc, catalog, customKeys);
         if (options.Attachments) StripAttachments(doc, catalog);
