@@ -14,10 +14,19 @@ public static class TextTools
 {
     /// <summary>Returns the text inside a region plus its dominant font size and style.</summary>
     public static RegionText GetTextInRegion(byte[] pdf, RectRegion region, string? password = null)
+        => Describe(ChunksIn(pdf, region, password));
+
+    /// <summary>The text chunks on the region's page whose centre lies inside the region.</summary>
+    private static List<Chunk> ChunksIn(byte[] pdf, RectRegion region, string? password)
     {
         var doc = PdfIo.OpenReadOnly(pdf, password);
         var rect = new PdfRect(region.X, region.Y, region.Width, region.Height);
-        var chunks = CollectChunks(doc, region.Page).Where(c => ContainsCenter(rect, c.BBox)).ToList();
+        return CollectChunks(doc, region.Page).Where(c => ContainsCenter(rect, c.BBox)).ToList();
+    }
+
+    /// <summary>The text the chunks spell plus its dominant font size and style.</summary>
+    private static RegionText Describe(List<Chunk> chunks)
+    {
         string dominantFont = chunks
             .Where(c => !string.IsNullOrEmpty(c.FontName))
             .GroupBy(c => c.FontName, StringComparer.Ordinal)
@@ -41,7 +50,8 @@ public static class TextTools
         float? fontSize = null, string? fontFamily = null, bool? bold = null, bool? italic = null,
         string? colorHex = null, string? password = null)
     {
-        var found = GetTextInRegion(pdf, region, password);
+        var chunks = ChunksIn(pdf, region, password);
+        var found = Describe(chunks);
         float size = fontSize ?? found.FontSize;
         // Family and style fall back to the run being replaced, as the summary above promises. They
         // used to default to plain Helvetica instead, so any caller that named a size but no face
@@ -49,12 +59,11 @@ public static class TextTools
         string stampFont = ResolveFont(fontFamily ?? found.FontFamily,
             bold ?? found.Bold, italic ?? found.Italic);
 
-        var removed = Redactor.RemoveContent(pdf, new[] { region }, password,
-            RemovalKindFor(pdf, region, password));
+        var removed = Redactor.RemoveContent(pdf, new[] { region }, password, RemovalKindFor(chunks));
         // Baseline-anchored (wrap: false) so the replacement lands on the original text's baseline,
         // in-line with the words around it, rather than being laid out top-down in a box and drifting
         // below the line (#96). Move and find & replace already stamp this way.
-        var stamped = StampText(removed.Pdf, region, newText, size, password,
+        var stamped = StampText(removed.Pdf, AnchorOf(region, chunks), newText, size, password,
             wrap: false, fontName: stampFont, color: ParseColor(colorHex));
 
         var warnings = new List<string>(removed.Warnings);
@@ -102,16 +111,27 @@ public static class TextTools
     /// image under the region is a letterhead or watermark that must survive the edit.
     /// </para>
     /// </summary>
-    private static ContentKinds RemovalKindFor(byte[] pdf, RectRegion region, string? password)
+    private static ContentKinds RemovalKindFor(List<Chunk> chunks)
     {
-        var doc = PdfIo.OpenReadOnly(pdf, password);
-        var rect = new PdfRect(region.X, region.Y, region.Width, region.Height);
-        var chunks = CollectChunks(doc, region.Page).Where(c => ContainsCenter(rect, c.BBox)).ToList();
         // "All of it", not "any of it": one stray invisible glyph among visible text is not a scan,
         // and erasing the picture behind real text is the more destructive way to be wrong.
         return chunks.Count > 0 && chunks.TrueForAll(c => c.Invisible)
             ? ContentKinds.TextAndPixelsBeneath
             : ContentKinds.TextOnly;
+    }
+
+    /// <summary>
+    /// Where re-stamped text starts: the left edge of the text found in the region and the descent
+    /// line of its top line. StampText treats a region's bottom as the descent line of the text that
+    /// was there, which holds only when the region is that text's own tight box. A box dragged
+    /// loosely around the words, as the Edit tool lets a user do, put the replacement at the box's
+    /// corner instead: left of where the line started and below its baseline. A region with no text
+    /// in it is its own anchor.
+    /// </summary>
+    private static RectRegion AnchorOf(RectRegion region, List<Chunk> chunks)
+    {
+        if (chunks.Count == 0) return region;
+        return region with { X = chunks.Min(c => c.BBox.Left), Y = chunks.Max(c => c.BBox.Bottom) };
     }
 
     /// <summary>
@@ -122,11 +142,13 @@ public static class TextTools
     /// </summary>
     public static EditResult MoveText(byte[] pdf, RectRegion source, float dx, float dy, string? password = null)
     {
-        var found = GetTextInRegion(pdf, source, password);
+        var chunks = ChunksIn(pdf, source, password);
+        var found = Describe(chunks);
         if (string.IsNullOrWhiteSpace(found.Text)) return EditResult.Of(pdf);
 
         var removed = Redactor.RemoveContent(pdf, new[] { source }, password, ContentKinds.TextOnly);
-        var dest = new RectRegion(source.Page, source.X + dx, source.Y + dy, source.Width, source.Height);
+        var anchor = AnchorOf(source, chunks);
+        var dest = anchor with { X = anchor.X + dx, Y = anchor.Y + dy };
         var stamped = StampText(removed.Pdf, dest, found.Text, found.FontSize, password,
             fontName: ResolveFont(found.FontFamily, found.Bold, found.Italic), wrap: false);
         return new EditResult(stamped, removed.Warnings);
