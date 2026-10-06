@@ -57,8 +57,8 @@ internal static class PdfImages
     /// <summary>A TIFF page as an image XObject: fax data embedded as it is, anything else decoded.</summary>
     private static (PdfStream Image, int Width, int Height) TiffPageXObject(TiffDecoder.Pages pages, int index)
     {
-        if (pages.TryCreateCcittXObject(index) is { } fax) return fax;
-        using var bitmap = pages.Decode(index);
+        if (TiffDecoder.TryCreateCcittXObject(pages, index) is { } fax) return fax;
+        using var bitmap = TiffDecoder.Decode(pages, index);
         return (FromBitmap(bitmap), bitmap.Width, bitmap.Height);
     }
 

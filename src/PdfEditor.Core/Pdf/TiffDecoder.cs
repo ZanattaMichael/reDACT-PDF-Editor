@@ -16,7 +16,7 @@ internal static class TiffDecoder
     /// <summary>The most image directories followed; a longer chain is a broken or hostile file, not a scan.</summary>
     private const int MaxDirectories = 10_000;
 
-    private sealed class Ifd
+    internal sealed class Ifd
     {
         public int Width, Height, Compression = 1, Photometric = 1, SamplesPerPixel = 1;
         public int Predictor = 1, PlanarConfig = 1, FillOrder = 1, T4Options;
@@ -36,31 +36,34 @@ internal static class TiffDecoder
         public bool IsPage => (NewSubfileType & 0b101) == 0 && SubfileType != 2;
     }
 
-    /// <summary>The page images of a TIFF, read once and decoded or embedded one at a time.</summary>
+    /// <summary>
+    /// The page images of a TIFF, read once (<see cref="Open"/>) and then decoded or embedded one
+    /// at a time (<see cref="Decode(Pages, int)"/>, <see cref="TryCreateCcittXObject(Pages, int)"/>).
+    /// </summary>
     public sealed class Pages
     {
-        private readonly byte[] _data;
-        private readonly List<Ifd> _pages;
-
-        internal Pages(byte[] data)
+        internal Pages(byte[] data, IReadOnlyList<Ifd> directories)
         {
-            _data = data;
-            _pages = ReadPages(data);
+            Data = data;
+            Directories = directories;
         }
 
+        internal byte[] Data { get; }
+        internal IReadOnlyList<Ifd> Directories { get; }
+
         /// <summary>How many pages the TIFF holds.</summary>
-        public int Count => _pages.Count;
-
-        /// <summary>Page <paramref name="index"/> (0-based) as a CCITTFaxDecode image XObject; null when it is not fax data.</summary>
-        public (PdfStream Image, int Width, int Height)? TryCreateCcittXObject(int index) =>
-            CcittXObject(_data, _pages[index]);
-
-        /// <summary>Page <paramref name="index"/> (0-based) decoded to a bitmap; throws <see cref="ArgumentException"/> for what it cannot read.</summary>
-        public SKBitmap Decode(int index) => DecodePage(_data, _pages[index]);
+        public int Count => Directories.Count;
     }
 
     /// <summary>Reads the TIFF's chain of image directories; throws <see cref="ArgumentException"/> when it has no usable page.</summary>
-    public static Pages Open(byte[] data) => new(data);
+    public static Pages Open(byte[] data) => new(data, ReadPages(data));
+
+    /// <summary>Page <paramref name="index"/> (0-based) as a CCITTFaxDecode image XObject; null when it is not fax data.</summary>
+    public static (PdfStream Image, int Width, int Height)? TryCreateCcittXObject(Pages pages, int index) =>
+        CcittXObject(pages.Data, pages.Directories[index]);
+
+    /// <summary>Page <paramref name="index"/> (0-based) decoded to a bitmap; throws <see cref="ArgumentException"/> for what it cannot read.</summary>
+    public static SKBitmap Decode(Pages pages, int index) => DecodePage(pages.Data, pages.Directories[index]);
 
     public static bool IsTiff(byte[] data) => data.Length >= 8
         && ((data[0] == 'I' && data[1] == 'I' && data[2] == 42 && data[3] == 0)
@@ -183,7 +186,7 @@ internal static class TiffDecoder
 
     /// <summary>The first page of a CCITT-compressed single-strip TIFF as a CCITTFaxDecode image XObject; null when not CCITT.</summary>
     public static (PdfStream Image, int Width, int Height)? TryCreateCcittXObject(byte[] data) =>
-        Open(data).TryCreateCcittXObject(0);
+        TryCreateCcittXObject(Open(data), 0);
 
     private static (PdfStream Image, int Width, int Height)? CcittXObject(byte[] data, Ifd ifd)
     {
@@ -232,7 +235,7 @@ internal static class TiffDecoder
     }
 
     /// <summary>Decodes the first page to a bitmap; throws <see cref="ArgumentException"/> for what it cannot read.</summary>
-    public static SKBitmap Decode(byte[] data) => Open(data).Decode(0);
+    public static SKBitmap Decode(byte[] data) => Decode(Open(data), 0);
 
     private static SKBitmap DecodePage(byte[] data, Ifd ifd)
     {
