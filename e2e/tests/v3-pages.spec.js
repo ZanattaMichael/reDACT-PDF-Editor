@@ -202,10 +202,10 @@ test.describe('Merging', () => {
 });
 
 test.describe('Opening images as documents', () => {
-  /** Opens an image file and saves the document it became. */
-  async function openImage(name, bytes) {
+  /** Opens an image file, checks how many pages it became, and saves that document. */
+  async function openImage(name, bytes, pages = 1) {
     const page = await openCapturingViewerWith(writeFixture(name, bytes));
-    await expect(page.locator('#page-total')).toHaveText('1');
+    await expect(page.locator('#page-total')).toHaveText(String(pages));
     const exported = await saveExport(page, `${name}.pdf`);
     await page.close();
     return pdfModel(exported.bytes);
@@ -256,8 +256,23 @@ test.describe('Opening images as documents', () => {
     expect(allPixels(image.data, [0, 160, 0])).toBe(true);
   });
 
-  test('a multi-page TIFF opens on its first page', async () => {
-    const model = await openImage('pages.tiff', images.TIFF_TWO_PAGES);
+  test('a multi-page TIFF opens with every page, in order', async () => {
+    const model = await openImage('pages.tiff', images.TIFF_TWO_PAGES, 2);
+    expect(model.pageCount()).toBe(2);
     expect(allPixels(drawnImage(model, 1).data, [255, 0, 0])).toBe(true);
+    expect(allPixels(drawnImage(model, 2).data, [0, 0, 255])).toBe(true);
+  });
+
+  test('a multi-page TIFF merged into a document adds all of its pages', async () => {
+    const page = await openCapturingViewerWith(writeFixture('before-scan.pdf', wordPages('Cover')));
+    await merge(page, [writeFixture('scan.tiff', images.TIFF_TWO_PAGES)]);
+    await expect(page.locator('#status')).toContainText('Merged 1 file');
+    const exported = await saveExport(page, 'with-scan.pdf');
+    await page.close();
+
+    const model = pdfModel(exported.bytes);
+    expect(pageWords(model)).toEqual(['Cover', '', '']);
+    expect(allPixels(drawnImage(model, 2).data, [255, 0, 0])).toBe(true);
+    expect(allPixels(drawnImage(model, 3).data, [0, 0, 255])).toBe(true);
   });
 });

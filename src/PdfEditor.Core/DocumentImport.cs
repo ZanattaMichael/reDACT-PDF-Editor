@@ -6,7 +6,8 @@ namespace PdfEditor.Core;
 
 /// <summary>
 /// Converts non-PDF inputs to single- or multi-page PDFs so they can be merged: raster images
-/// (each becomes a page sized to the image) and Word documents (via LibreOffice, when available).
+/// (each image, and each page of a multi-page TIFF, becomes an A4 page with the image fitted to
+/// it) and Word documents (via LibreOffice, when available).
 /// </summary>
 public static class DocumentImport
 {
@@ -22,17 +23,27 @@ public static class DocumentImport
     };
 
     /// <summary>
-    /// Wraps a raster image (PNG/JPEG/…) in a one-page PDF. The page is a standard A4 sheet, in the
-    /// image's orientation, with the image scaled to fit inside a small margin (aspect preserved,
-    /// centred) — so a merged photo is a normal document page, not a page as large as the image's
-    /// pixel count.
+    /// Wraps a raster image (PNG/JPEG/…) in a PDF: one page per image, so a multi-page TIFF (a
+    /// scanned document, a fax) becomes a page for each of its pages, in order. Each page is a
+    /// standard A4 sheet, in its image's orientation, with the image scaled to fit inside a small
+    /// margin (aspect preserved, centred) — so a merged photo is a normal document page, not a
+    /// page as large as the image's pixel count.
     /// </summary>
     public static byte[] ImageToPdf(byte[] image)
     {
-        var (xobject, pixelWidth, pixelHeight) = PdfImages.CreateXObject(image);
-        float iw = pixelWidth, ih = pixelHeight;
-        if (iw <= 0 || ih <= 0) throw new ArgumentException("The image has no usable dimensions.", nameof(image));
+        var pdf = PdfDocument.CreateNew();
+        foreach (var (xobject, pixelWidth, pixelHeight) in PdfImages.CreateXObjects(image))
+        {
+            if (pixelWidth <= 0 || pixelHeight <= 0)
+                throw new ArgumentException("The image has no usable dimensions.", nameof(image));
+            AddFittedPage(pdf, xobject, pixelWidth, pixelHeight);
+        }
+        return PdfIo.Save(pdf);
+    }
 
+    /// <summary>Adds an A4 page in the image's orientation, with the image fitted and centred on it.</summary>
+    private static void AddFittedPage(PdfDocument pdf, PdfStream xobject, float iw, float ih)
+    {
         const float a4Short = 595f, a4Long = 842f, margin = 18f; // ~0.25 inch margin
         bool landscape = iw > ih;
         float pw = landscape ? a4Long : a4Short;
@@ -42,11 +53,9 @@ public static class DocumentImport
         float w = iw * scale, h = ih * scale;
         float x = (pw - w) / 2f, y = (ph - h) / 2f;
 
-        var pdf = PdfDocument.CreateNew();
         var page = pdf.AddNewPage(pw, ph);
         var name = PdfResources.Add(page.GetOrCreateResources(), PdfName.XObject, "Im", xobject);
         page.SetContent(new ContentBuilder().SaveState().Transform(w, 0, 0, h, x, y).DrawXObject(name).RestoreState().ToArray());
-        return PdfIo.Save(pdf);
     }
 
     /// <summary>

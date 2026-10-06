@@ -111,6 +111,87 @@ public class TiffImportTests
         Assert.InRange(pixel.Green, 150, 170);
     }
 
+    /// <summary>
+    /// A multi-page TIFF (a scanned document, a fax) chains one image directory per page. Every
+    /// page is imported, in order, each on a page of its own orientation. Only the first used to
+    /// be: the rest of the document was dropped without a word.
+    /// </summary>
+    [Fact]
+    public void MultiPageTiff_ImportsEveryPage_InOrder()
+    {
+        byte[] tiff = Tiff.Chain(new Tiff.Page[]
+        {
+            new(Width: 40, Height: 20, Gray: 0),
+            new(Width: 20, Height: 40, Gray: 128),
+            new(Width: 30, Height: 30, Gray: 255),
+        });
+
+        byte[] pdf = DocumentImport.ImageToPdf(tiff);
+
+        var info = PdfInspector.GetInfo(pdf);
+        Assert.Equal(3, info.PageCount);
+        Assert.True(info.Pages[0].Width > info.Pages[0].Height); // landscape, like its image
+        Assert.True(info.Pages[1].Width < info.Pages[1].Height); // portrait
+        var grays = info.Pages.Select(p => TestPdfAssert.PixelAt(pdf, p.Number, p.Width / 2, p.Height / 2).Red);
+        Assert.Equal(new byte[] { 0, 128, 255 }, grays.ToArray());
+    }
+
+    [Fact]
+    public void MultiPageTiff_SkipsReducedResolutionCopies()
+    {
+        // A thumbnail of the first page (NewSubfileType bit 0) sits between the two pages.
+        byte[] tiff = Tiff.Chain(new Tiff.Page[]
+        {
+            new(Width: 20, Height: 20, Gray: 0),
+            new(Width: 5, Height: 5, Gray: 200, NewSubfileType: 1),
+            new(Width: 20, Height: 20, Gray: 255),
+        });
+
+        byte[] pdf = DocumentImport.ImageToPdf(tiff);
+
+        Assert.Equal(2, PdfInspector.GetInfo(pdf).PageCount);
+        Assert.Equal(255, TestPdfAssert.PixelAt(pdf, 2, 297, 421).Red);
+    }
+
+    [Fact]
+    public void MultiPageTiff_WhoseChainLoopsBack_EndsInsteadOfRunningForever()
+    {
+        byte[] tiff = Tiff.Chain(new Tiff.Page[]
+        {
+            new(Width: 10, Height: 10, Gray: 0),
+            new(Width: 10, Height: 10, Gray: 255),
+        }, loopBack: true);
+
+        Assert.Equal(2, PdfInspector.GetInfo(DocumentImport.ImageToPdf(tiff)).PageCount);
+    }
+
+    [Fact]
+    public void MultiPageTiff_WithAPageItCannotRead_IsRefusedWithThatReason()
+    {
+        // Dropping the page would hand back a shorter document than the one opened.
+        byte[] tiff = Tiff.Chain(new Tiff.Page[]
+        {
+            new(Width: 10, Height: 10, Gray: 0),
+            new(Width: 10, Height: 10, Gray: 0, Compression: 7),
+        });
+
+        var ex = Assert.Throws<ArgumentException>(() => DocumentImport.ImageToPdf(tiff));
+        Assert.Contains("JPEG-compressed", ex.Message);
+    }
+
+    [Fact]
+    public void MultiPageTiff_AsASignatureImage_UsesItsFirstPage()
+    {
+        byte[] tiff = Tiff.Chain(new Tiff.Page[]
+        {
+            new(Width: 10, Height: 10, Gray: 0),
+            new(Width: 10, Height: 10, Gray: 255),
+        });
+
+        using var bitmap = PdfImages.DecodeBitmap(tiff)!;
+        Assert.Equal(new SKColor(0, 0, 0), Rgb(bitmap, 5, 5));
+    }
+
     [Theory]
     [InlineData(4, 0, -1, false)]   // Group 4, BlackIsZero
     [InlineData(3, 1, 1, true)]     // Group 3 2-D, WhiteIsZero
@@ -172,9 +253,65 @@ public class TiffImportTests
         return new SKColor(c.Red, c.Green, c.Blue);
     }
 
-    /// <summary>A minimal TIFF writer: one image directory, strip-organised.</summary>
+    /// <summary>A minimal TIFF writer: one image directory, strip-organised, or a chain of simple pages.</summary>
     private static class Tiff
     {
+        /// <summary>One page of <see cref="Chain"/>: an 8-bit grey image of one shade, in a single strip.</summary>
+        public sealed record Page(int Width, int Height, byte Gray, int NewSubfileType = 0, int Compression = 1);
+
+        /// <summary>
+        /// A little-endian TIFF holding <paramref name="pages"/> as a chain of image directories,
+        /// the last pointing back at the first when <paramref name="loopBack"/> is set.
+        /// </summary>
+        public static byte[] Chain(IReadOnlyList<Page> pages, bool loopBack = false)
+        {
+            const int entries = 10;
+            const int directorySize = 2 + entries * 12 + 4;
+            var stripOffsets = new List<long>();
+            long at = 8;
+            foreach (var page in pages)
+            {
+                stripOffsets.Add(at);
+                at += page.Width * page.Height;
+            }
+            if (at % 2 == 1) at++;
+            long firstDirectory = at;
+
+            var file = new List<byte> { (byte)'I', (byte)'I', 42, 0 };
+            void U16(int v) { file.Add((byte)v); file.Add((byte)(v >> 8)); }
+            void U32(long v) { for (int k = 0; k < 4; k++) file.Add((byte)(v >> (8 * k))); }
+            void Entry(int tag, int type, long value)
+            {
+                U16(tag);
+                U16(type);
+                U32(1);
+                if (type == 3) { U16((int)value); U16(0); }
+                else U32(value);
+            }
+
+            U32(firstDirectory);
+            foreach (var page in pages) file.AddRange(Enumerable.Repeat(page.Gray, page.Width * page.Height));
+            if (file.Count % 2 == 1) file.Add(0);
+            for (int i = 0; i < pages.Count; i++)
+            {
+                var page = pages[i];
+                U16(entries);
+                Entry(254, 4, page.NewSubfileType);
+                Entry(256, 4, page.Width);
+                Entry(257, 4, page.Height);
+                Entry(258, 3, 8);
+                Entry(259, 3, page.Compression);
+                Entry(262, 3, 1);
+                Entry(273, 4, stripOffsets[i]);
+                Entry(277, 3, 1);
+                Entry(278, 4, page.Height);
+                Entry(279, 4, page.Width * page.Height);
+                bool last = i == pages.Count - 1;
+                U32(last ? (loopBack ? firstDirectory : 0) : firstDirectory + (i + 1) * directorySize);
+            }
+            return file.ToArray();
+        }
+
         public static byte[] Build(bool littleEndian, int width, int height, int[] bitsPerSample, int photometric,
             byte[][] strips, int samplesPerPixel = 1, int compression = 1, int predictor = 1, int rowsPerStrip = 0,
             int extraSamples = 0, int[]? colorMap = null, int t4Options = 0, int fillOrder = 1, bool tiled = false,

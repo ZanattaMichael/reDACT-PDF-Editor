@@ -16,14 +16,13 @@ internal static class PdfImages
     // ------------------------------------------------------------------ encoding
 
     /// <summary>
-    /// Builds an image XObject from an encoded image file. JPEG is embedded as-is (DCTDecode —
-    /// no generation loss); everything else is decoded and stored as Flate-compressed RGB, with
-    /// a soft mask when the image has any transparency.
+    /// Builds an image XObject from an encoded image file (the first page of a multi-page TIFF).
+    /// JPEG is embedded as-is (DCTDecode — no generation loss); everything else is decoded and
+    /// stored as Flate-compressed RGB, with a soft mask when the image has any transparency.
     /// </summary>
     public static (PdfStream Image, int Width, int Height) CreateXObject(byte[] encoded)
     {
-        if (TiffDecoder.IsTiff(encoded) && TiffDecoder.TryCreateCcittXObject(encoded) is { } fax)
-            return fax;
+        if (TiffDecoder.IsTiff(encoded)) return TiffPageXObject(TiffDecoder.Open(encoded), 0);
         if (TryReadJpegHeader(encoded, out int jw, out int jh, out int components, out bool adobeInverted))
         {
             var jpeg = new PdfStream();
@@ -44,7 +43,26 @@ internal static class PdfImages
         return (FromBitmap(bitmap), bitmap.Width, bitmap.Height);
     }
 
-    /// <summary>Decodes any supported image file (SkiaSharp's formats, plus baseline TIFF).</summary>
+    /// <summary>
+    /// One image XObject per image an encoded file holds: every page of a multi-page TIFF, in
+    /// order, and the single image of anything else (as <see cref="CreateXObject"/> builds it).
+    /// </summary>
+    public static IEnumerable<(PdfStream Image, int Width, int Height)> CreateXObjects(byte[] encoded)
+    {
+        if (!TiffDecoder.IsTiff(encoded)) return new[] { CreateXObject(encoded) };
+        var pages = TiffDecoder.Open(encoded);
+        return Enumerable.Range(0, pages.Count).Select(index => TiffPageXObject(pages, index));
+    }
+
+    /// <summary>A TIFF page as an image XObject: fax data embedded as it is, anything else decoded.</summary>
+    private static (PdfStream Image, int Width, int Height) TiffPageXObject(TiffDecoder.Pages pages, int index)
+    {
+        if (TiffDecoder.TryCreateCcittXObject(pages, index) is { } fax) return fax;
+        using var bitmap = TiffDecoder.Decode(pages, index);
+        return (FromBitmap(bitmap), bitmap.Width, bitmap.Height);
+    }
+
+    /// <summary>Decodes any supported image file (SkiaSharp's formats, plus the first page of a baseline TIFF).</summary>
     public static SKBitmap? DecodeBitmap(byte[] encoded)
     {
         if (TiffDecoder.IsTiff(encoded)) return TiffDecoder.Decode(encoded);
