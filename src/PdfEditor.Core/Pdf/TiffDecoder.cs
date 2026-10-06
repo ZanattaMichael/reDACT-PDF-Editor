@@ -4,14 +4,18 @@ using SkiaSharp;
 namespace PdfEditor.Core.Pdf;
 
 /// <summary>
-/// Reads the first image of a baseline TIFF — the format document scanners write — for importing
-/// a scan as a PDF page. Uncompressed, PackBits, LZW and Deflate strips are decoded to a bitmap;
-/// CCITT fax data (the usual compression for black-and-white scans) is not decoded at all but
-/// carried into the PDF as-is, since <c>CCITTFaxDecode</c> is a PDF filter every viewer applies.
-/// JPEG-in-TIFF and tiled layouts are declined with a clear error.
+/// Reads the pages of a baseline TIFF — the format document scanners write — for importing a scan
+/// as PDF pages. A multi-page TIFF (a scanned document, a fax) holds one image directory per page,
+/// chained one to the next; each is a page. Uncompressed, PackBits, LZW and Deflate strips are
+/// decoded to a bitmap; CCITT fax data (the usual compression for black-and-white scans) is not
+/// decoded at all but carried into the PDF as-is, since <c>CCITTFaxDecode</c> is a PDF filter
+/// every viewer applies. JPEG-in-TIFF and tiled layouts are declined with a clear error.
 /// </summary>
 internal static class TiffDecoder
 {
+    /// <summary>The most image directories followed; a longer chain is a broken or hostile file, not a scan.</summary>
+    private const int MaxDirectories = 10_000;
+
     private sealed class Ifd
     {
         public int Width, Height, Compression = 1, Photometric = 1, SamplesPerPixel = 1;
@@ -22,7 +26,41 @@ internal static class TiffDecoder
         public int[]? ColorMap;
         public bool Tiled;
         public int ExtraSamples;
+        public int NewSubfileType, SubfileType;
+
+        /// <summary>
+        /// Whether this directory is a page. Scanners may also store a reduced-resolution copy of
+        /// a page (a thumbnail) or a transparency mask in the chain, marked by NewSubfileType bits
+        /// 0 and 2 (or the older SubfileType 2); neither is a page of its own.
+        /// </summary>
+        public bool IsPage => (NewSubfileType & 0b101) == 0 && SubfileType != 2;
     }
+
+    /// <summary>The page images of a TIFF, read once and decoded or embedded one at a time.</summary>
+    public sealed class Pages
+    {
+        private readonly byte[] _data;
+        private readonly List<Ifd> _pages;
+
+        internal Pages(byte[] data)
+        {
+            _data = data;
+            _pages = ReadPages(data);
+        }
+
+        /// <summary>How many pages the TIFF holds.</summary>
+        public int Count => _pages.Count;
+
+        /// <summary>Page <paramref name="index"/> (0-based) as a CCITTFaxDecode image XObject; null when it is not fax data.</summary>
+        public (PdfStream Image, int Width, int Height)? TryCreateCcittXObject(int index) =>
+            CcittXObject(_data, _pages[index]);
+
+        /// <summary>Page <paramref name="index"/> (0-based) decoded to a bitmap; throws <see cref="ArgumentException"/> for what it cannot read.</summary>
+        public SKBitmap Decode(int index) => DecodePage(_data, _pages[index]);
+    }
+
+    /// <summary>Reads the TIFF's chain of image directories; throws <see cref="ArgumentException"/> when it has no usable page.</summary>
+    public static Pages Open(byte[] data) => new(data);
 
     public static bool IsTiff(byte[] data) => data.Length >= 8
         && ((data[0] == 'I' && data[1] == 'I' && data[2] == 42 && data[3] == 0)
@@ -73,22 +111,44 @@ internal static class TiffDecoder
         };
     }
 
-    private static Ifd ReadFirstIfd(byte[] d)
+    /// <summary>
+    /// The page images, in order: every image directory in the chain that <see cref="Ifd.IsPage"/>,
+    /// or every directory when none is marked as a page. The chain is followed until it ends, loops
+    /// back on itself, leaves the file or passes <see cref="MaxDirectories"/>.
+    /// </summary>
+    private static List<Ifd> ReadPages(byte[] d)
     {
         var reader = new TiffReader(d);
-        long ifd = reader.U32(4);
-        if (ifd <= 0 || ifd + 2 > d.Length) throw new ArgumentException("The TIFF has no image directory.");
-        int count = (int)reader.U16(ifd);
+        var directories = new List<Ifd>();
+        var seen = new HashSet<long>();
+        for (long at = reader.U32(4); at > 0 && at + 2 <= d.Length && seen.Count < MaxDirectories && seen.Add(at);)
+        {
+            var (directory, next) = ReadIfd(reader, d, at);
+            directories.Add(directory);
+            at = next;
+        }
+        if (directories.Count == 0) throw new ArgumentException("The TIFF has no image directory.");
+
+        var pages = directories.Where(p => p.IsPage).ToList();
+        if (pages.Count == 0) pages = directories;
+        foreach (var page in pages)
+            if (page.Width <= 0 || page.Height <= 0 || (long)page.Width * page.Height > 100_000_000)
+                throw new ArgumentException("The TIFF declares no usable image size.");
+        return pages;
+    }
+
+    /// <summary>The image directory at <paramref name="at"/>, and the offset of the next (0 at the end of the chain).</summary>
+    private static (Ifd Directory, long Next) ReadIfd(TiffReader reader, byte[] d, long at)
+    {
+        int count = (int)reader.U16(at);
         var result = new Ifd();
         for (int i = 0; i < count; i++)
         {
-            long e = ifd + 2 + i * 12L;
+            long e = at + 2 + i * 12L;
             if (e + 12 > d.Length) break;
             ReadEntry(reader, e, result);
         }
-        if (result.Width <= 0 || result.Height <= 0 || (long)result.Width * result.Height > 100_000_000)
-            throw new ArgumentException("The TIFF declares no usable image size.");
-        return result;
+        return (result, reader.U32(at + 2 + count * 12L));
     }
 
     /// <summary>Reads the 12-byte directory entry at <paramref name="e"/> into <paramref name="result"/>.</summary>
@@ -101,6 +161,8 @@ internal static class TiffDecoder
         long[] Values() => reader.Values(n, size, valueAt);
         switch (tag)
         {
+            case 254: result.NewSubfileType = (int)Values()[0]; break;
+            case 255: result.SubfileType = (int)Values()[0]; break;
             case 256: result.Width = (int)Values()[0]; break;
             case 257: result.Height = (int)Values()[0]; break;
             case 258: result.BitsPerSample = Values().Select(v => (int)v).ToArray(); break;
@@ -119,10 +181,12 @@ internal static class TiffDecoder
         }
     }
 
-    /// <summary>A CCITT-compressed single-strip TIFF as a CCITTFaxDecode image XObject; null when not CCITT.</summary>
-    public static (PdfStream Image, int Width, int Height)? TryCreateCcittXObject(byte[] data)
+    /// <summary>The first page of a CCITT-compressed single-strip TIFF as a CCITTFaxDecode image XObject; null when not CCITT.</summary>
+    public static (PdfStream Image, int Width, int Height)? TryCreateCcittXObject(byte[] data) =>
+        Open(data).TryCreateCcittXObject(0);
+
+    private static (PdfStream Image, int Width, int Height)? CcittXObject(byte[] data, Ifd ifd)
     {
-        var ifd = ReadFirstIfd(data);
         if (ifd.Compression is not (2 or 3 or 4)) return null;
         if (ifd.StripOffsets.Length != 1)
             throw new ArgumentException("This TIFF stores its fax data in several strips, which cannot be embedded; save it as a single-strip TIFF, PNG or PDF first.");
@@ -167,10 +231,11 @@ internal static class TiffDecoder
         return (byte)r;
     }
 
-    /// <summary>Decodes the first image to a bitmap; throws <see cref="ArgumentException"/> for what it cannot read.</summary>
-    public static SKBitmap Decode(byte[] data)
+    /// <summary>Decodes the first page to a bitmap; throws <see cref="ArgumentException"/> for what it cannot read.</summary>
+    public static SKBitmap Decode(byte[] data) => Open(data).Decode(0);
+
+    private static SKBitmap DecodePage(byte[] data, Ifd ifd)
     {
-        var ifd = ReadFirstIfd(data);
         EnsureDecodable(ifd);
         int bps = ifd.BitsPerSample[0];
         int spp = Math.Max(1, ifd.SamplesPerPixel);
