@@ -18,8 +18,8 @@ so your documents never leave your machine.
 | 💾 **Save changes** | Save the edited document via the file picker or the downloads bar. Undo history while editing. |
 | 🧭 **Sits on top of browser PDF viewing** | Navigating to a `.pdf` opens the editor automatically (toggleable). Embedded PDF viewers on web pages get an “Edit in reDACT” overlay button, plus a toolbar button and right-click menu. Adobe sites and viewers are always left alone. |
 | 🔒 **Password protection** | AES-256 encryption with user/owner passwords; open, edit, and decrypt protected files. Edits keep a protected file encrypted, in its own scheme and under its own passwords. |
-| 🖼 **Open images** | Open a PNG/JPEG/etc. directly — with the Open button or by **dragging it onto the window** — and it becomes a one-page PDF you can edit, OCR and merge like any document. |
-| ➕ **Merge & arrange** | Append PDFs, images, or Word documents; a **Merge & arrange** dialog lets you set the combine order (or drop files) before merging. Images are laid onto standard A4 pages. |
+| 🖼 **Open images** | Open a PNG/JPEG/TIFF/etc. directly — with the Open button or by **dragging it onto the window** — and it becomes a PDF you can edit, OCR and merge like any document: one page, or one per page of a multi-page TIFF (a scanned document or fax). |
+| ➕ **Merge & arrange** | Append PDFs, images, or Word documents; a **Merge & arrange** dialog lets you set the combine order (or drop files) before merging. Images are laid onto standard A4 pages, every page of a multi-page TIFF included. |
 | 🗂 **Organize pages** | Reorder pages by drag or ▲/▼ and delete the ones you don't need. |
 | 🗒 **Fillable forms** | Insert text, multi-line, checkbox, dropdown (choice), and JavaScript **button** fields others can fill in, and fill/flatten existing AcroForm fields. |
 | 🖍 **Annotate** | Highlight text, draw freehand, and add text anywhere. |
@@ -117,7 +117,7 @@ Requires the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
 
 ```bash
 dotnet build            # build everything
-dotnet test             # the whole .NET suite (822 tests: 639 + 137 unit, 17 integration, 29 perf)
+dotnet test             # the whole .NET suite (827 tests: 644 + 137 unit, 17 integration, 29 perf)
 ```
 
 - **`PdfEditor.Core.Tests`** — unit tests for the PDF engine (redaction, text editing,
@@ -161,7 +161,7 @@ save, and undo.
 cd e2e
 npm install
 npx playwright install chromium   # once
-npx playwright test               # 239 tests
+npx playwright test               # 240 tests
 ```
 
 `tests/engine-v3.spec.js` checks what the 3.0 engine writes, not just what the viewer shows. Each
@@ -188,7 +188,7 @@ test signs with.
 | `v3-redaction` | Drawn and searched redactions remove the text, links, covered pixels and inline images, paint an opaque box, and leave other pages byte-for-byte the same; the compliance report carries both files' SHA-256 |
 | `v3-text` | Replacing text in a region keeps the original line's position and takes the chosen font, size, style and colour; find & replace, undo/redo, added text, and moved text and images |
 | `v3-markup` | Highlights (multiply blend, snapped or boxed), freehand strokes, drawn and uploaded signatures, watermarks (colour, opacity, angle), Bates numbers, and each flatten mode |
-| `v3-pages` | Rotation, page removal and reordering, merging documents, images and arrangements, and opening JPEG, PNG, GIF, BMP, WebP and TIFF files |
+| `v3-pages` | Rotation, page removal and reordering, merging documents, images and arrangements, and opening JPEG, PNG, GIF, BMP, WebP and TIFF files, with every page of a multi-page TIFF |
 | `v3-forms` | Every field type's AcroForm entries, flags, options, widget states, scripts and appearance streams, filled and flattened |
 | `v3-active-content` | Scripts and outward links stripped on save unless kept, document scripts added and removed, and each "Remove hidden information" category gone without a trace |
 | `v3-security-signing` | Removing encryption, owner and wrong passwords, edits and merges keeping a protected file encrypted (checked with poppler), signing twice, signing with an OpenSSL certificate, a wrong certificate password, tampering, and signing an encrypted file |

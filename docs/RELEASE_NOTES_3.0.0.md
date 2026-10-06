@@ -21,6 +21,11 @@ listed under *What behaves differently* below.
   in a merged file points at its page in the merged document.
 - **More awkward files work.** Text drawn in a font the page forgot to declare can now be found,
   edited and redacted. Under iText this failed with an internal error.
+- **Editing a protected document keeps it protected.** Every edit used to save the document
+  unencrypted while the viewer still showed it as encrypted. See *What behaves differently*.
+- **Multi-page TIFFs open with every page.** A scanned document or fax saved as a multi-page TIFF
+  becomes one PDF page per page, in order, whether you open it or merge it into another
+  document. 2.x kept only the first page and dropped the rest without a word.
 
 ## What behaves differently
 
@@ -43,9 +48,20 @@ These are deliberate, and each one is pinned by a test or a golden recording.
   script or opens a web address is dropped too, since it no longer leads anywhere in the new
   document. Bookmarks that lead to a kept page are carried across, along with their parent
   bookmarks.
-- **Password-protected output is unchanged.** It still uses AES-256 with printing allowed, and
-  permission-restricted files ("printing only", "no copying") still open for editing without the
-  owner password, as they did under 2.x.
+- **Edits keep a document's encryption.** 2.x wrote every edit of a protected document out
+  unencrypted, while the viewer kept showing "🔒 encrypted", so Save produced a plaintext copy.
+  3.0 writes each edit in the document's own scheme (RC4, AES-128 or AES-256), under its own
+  passwords and with its own permissions. Rearranging pages, OCR and merging into the document
+  keep it too, and merging into a protected document, which 2.x refused for want of its password,
+  now works. Protecting a document still uses AES-256 with printing allowed, and *Remove
+  encryption* still removes it. Permission-restricted files ("printing only", "no copying") still
+  open for editing without the owner password, and now keep their restrictions afterwards.
+- **Replaced and moved text stays on its line.** Replacing the text in a box drawn loosely around
+  it used to put the new text at the box's corner, left of and below the original line. It now
+  starts where the original line did.
+- **Save waits to know what to strip.** Scripts and link addresses are stripped on save unless
+  you keep them, which depends on a scan that runs after the document opens and after each edit.
+  A Save pressed before that scan finished used to strip nothing. Save now waits for it.
 
 ## Installing / upgrading
 
@@ -65,6 +81,10 @@ These are deliberate, and each one is pinned by a test or a golden recording.
   ink for each glyph must fall inside the box the engine reports, and every kind of file the
   writer produces must render in PDFium.
 - `DependencyLicenceGuardTests` fails the build if iText or BouncyCastle is referenced again.
+- The browser end-to-end suite (`e2e/tests/v3-*.spec.js`) drives every feature through the viewer
+  against the real host and checks the saved file with readers that share no code with the
+  engine. Its OCR, Word and encryption tests need Tesseract, LibreOffice Writer and poppler-utils
+  installed; see CONTRIBUTING.md.
 - The release-candidate workflow now honours a version raised in `extension/manifest.json`
   (`scripts/next-version.sh`). This release is the first to use it: RCs are numbered 3.0.0
   until v3.0.0 is tagged, and patch numbering resumes from there.
