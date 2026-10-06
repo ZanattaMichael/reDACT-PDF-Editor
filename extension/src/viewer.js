@@ -84,6 +84,7 @@ const state = {
   // or a figure, so it stays available rather than being inferred.
   highlightMode: 'sweep',
   safety: null,         // { hasActiveContent, javaScriptCount, urlCount, samples }
+  safetyScan: null,     // the pending (or last) refreshSafety() — Save waits on it
   compareOther: null,   // { b64, name } — the last document compared against, kept for visual diff
   keepActiveContent: false, // false = strip JavaScript on save until the user opts in
   keepLinks: false,     // false = strip link URLs on save until the user enables them
@@ -478,7 +479,7 @@ async function loadDocument(bytes, fileName, { pushHistory = false, password } =
   }
   await showDocument();
   updateChrome();
-  Promise.all([refreshSignatures(), refreshSafety()]).then(() => {
+  startScans().then(() => {
     updateChrome();
     if (freshOpen) warnActiveContent();
     refreshLinks(); // fetch, rate, and draw the clickable link hotspots
@@ -534,6 +535,17 @@ async function refreshSignatures() {
       `${e?.message ?? e} — the document will be shown as unsigned`);
     state.signatures = [];
   }
+}
+
+/**
+ * Starts the signature and active-content scans of the working document, which run after it is
+ * painted. Save waits for the active-content scan (state.safetyScan), because its result decides
+ * what Save strips: a Save pressed while it was still running found state.safety null and wrote
+ * the document's scripts and links out unstripped.
+ */
+function startScans() {
+  state.safetyScan = refreshSafety();
+  return Promise.all([refreshSignatures(), state.safetyScan]);
 }
 
 /** Scans for embedded JavaScript / URL actions so the UI can flag (and, by default, strip) them. */
@@ -4154,6 +4166,7 @@ function printDocument() {
 async function save() {
   let bytes = state.pdf;
   activity.add('info', 'saving document', state.fileName);
+  await state.safetyScan; // what to strip is only known once the scan of this version is in
   const stripJs = state.safety?.javaScriptCount > 0 && !state.keepActiveContent;
   // URL scanning is off for now: leave link URLs untouched on save.
   const stripUrls = URL_SCANNING_ENABLED && state.safety?.urlCount > 0 && !state.keepLinks;
@@ -4220,7 +4233,7 @@ async function restore(snap, message) {
   state.safety = null;
   await showDocument();
   updateChrome();
-  Promise.all([refreshSignatures(), refreshSafety()]).then(updateChrome);
+  startScans().then(updateChrome);
   toast(message);
 }
 
