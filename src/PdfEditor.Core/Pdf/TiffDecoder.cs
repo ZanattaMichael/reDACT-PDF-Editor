@@ -62,8 +62,15 @@ internal static class TiffDecoder
     public static (PdfStream Image, int Width, int Height)? TryCreateCcittXObject(Pages pages, int index) =>
         CcittXObject(pages.Data, pages.Directories[index]);
 
+    /// <summary>The first page of a CCITT-compressed single-strip TIFF as a CCITTFaxDecode image XObject; null when not CCITT.</summary>
+    public static (PdfStream Image, int Width, int Height)? TryCreateCcittXObject(byte[] data) =>
+        TryCreateCcittXObject(Open(data), 0);
+
     /// <summary>Page <paramref name="index"/> (0-based) decoded to a bitmap; throws <see cref="ArgumentException"/> for what it cannot read.</summary>
     public static SKBitmap Decode(Pages pages, int index) => DecodePage(pages.Data, pages.Directories[index]);
+
+    /// <summary>Decodes the first page to a bitmap; throws <see cref="ArgumentException"/> for what it cannot read.</summary>
+    public static SKBitmap Decode(byte[] data) => Decode(Open(data), 0);
 
     public static bool IsTiff(byte[] data) => data.Length >= 8
         && ((data[0] == 'I' && data[1] == 'I' && data[2] == 42 && data[3] == 0)
@@ -184,10 +191,6 @@ internal static class TiffDecoder
         }
     }
 
-    /// <summary>The first page of a CCITT-compressed single-strip TIFF as a CCITTFaxDecode image XObject; null when not CCITT.</summary>
-    public static (PdfStream Image, int Width, int Height)? TryCreateCcittXObject(byte[] data) =>
-        TryCreateCcittXObject(Open(data), 0);
-
     private static (PdfStream Image, int Width, int Height)? CcittXObject(byte[] data, Ifd ifd)
     {
         if (ifd.Compression is not (2 or 3 or 4)) return null;
@@ -233,9 +236,6 @@ internal static class TiffDecoder
         for (int i = 0; i < 8; i++) r |= ((b >> i) & 1) << (7 - i);
         return (byte)r;
     }
-
-    /// <summary>Decodes the first page to a bitmap; throws <see cref="ArgumentException"/> for what it cannot read.</summary>
-    public static SKBitmap Decode(byte[] data) => Decode(Open(data), 0);
 
     private static SKBitmap DecodePage(byte[] data, Ifd ifd)
     {
