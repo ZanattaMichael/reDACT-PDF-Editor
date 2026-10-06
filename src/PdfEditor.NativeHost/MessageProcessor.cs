@@ -162,7 +162,7 @@ public static class MessageProcessor
     }
 
     private static string Sha256Hex(byte[] data) =>
-        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(data)).ToLowerInvariant();
+        Convert.ToHexString(Org.BouncyCastle.Security.DigestUtilities.CalculateDigest("SHA-256", data)).ToLowerInvariant();
 
     private static object RotateAction(JsonObject p)
     {

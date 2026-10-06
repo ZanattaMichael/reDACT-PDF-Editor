@@ -10,7 +10,7 @@ following third-party components, each under its own licence.
 | [PDFtoImage](https://github.com/sungaila/PDFtoImage) | Page rendering (previews, OCR input) | MIT |
 | [PDFium](https://pdfium.googlesource.com/pdfium/) (binaries from [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries), via PDFtoImage) | Rendering engine | BSD-3-Clause / Apache-2.0 |
 | [SkiaSharp](https://github.com/mono/SkiaSharp) (via PDFtoImage) | Image encoding and decoding | MIT |
-| [System.Security.Cryptography.Pkcs](https://github.com/dotnet/runtime) | CMS signatures and PKCS#12 files | MIT |
+| [BouncyCastle.Cryptography](https://github.com/bcgit/bc-csharp) | All cryptography: PDF encryption, CMS signatures, PKCS#12 files, certificate generation | MIT |
 | .NET runtime (self-contained builds) | Runtime | MIT |
 
 ## Embedded data files
@@ -25,5 +25,7 @@ These are in `src/PdfEditor.Core/Pdf/Fonts/Resources/` and are distributed unmod
 
 ## No longer used
 
-Up to and including 2.x, reDACT used [iText Core](https://github.com/itext/itext-dotnet) (AGPL-3.0)
-and BouncyCastle (MIT). From 3.0, neither is a dependency. See `docs/RELEASE_NOTES_3.0.0.md`.
+Up to and including 2.x, reDACT used [iText Core](https://github.com/itext/itext-dotnet) (AGPL-3.0),
+and reached BouncyCastle through iText's adapter (`itext.bouncy-castle-adapter`, AGPL-3.0). From
+3.0, iText and its adapter are not dependencies; BouncyCastle is used directly. See
+`docs/RELEASE_NOTES_3.0.0.md`.

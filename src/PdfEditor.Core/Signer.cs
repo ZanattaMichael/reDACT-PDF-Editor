@@ -1,10 +1,16 @@
 using System.Globalization;
-using System.Security.Cryptography;
-using System.Security.Cryptography.Pkcs;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using Org.BouncyCastle.Asn1;
+using Org.BouncyCastle.Asn1.X509;
+using Org.BouncyCastle.Cms;
+using Org.BouncyCastle.Crypto;
+using Org.BouncyCastle.Crypto.Parameters;
+using Org.BouncyCastle.Security;
+using Org.BouncyCastle.Utilities.Collections;
+using Org.BouncyCastle.X509;
 using PdfEditor.Core.Pdf;
 using PdfEditor.Core.Pdf.Fonts;
+using CmsContentInfo = Org.BouncyCastle.Asn1.Cms.ContentInfo;
 
 namespace PdfEditor.Core;
 
@@ -45,9 +51,8 @@ public static class Signer
         string? reason = null, string? location = null, RectRegion? placement = null,
         byte[]? appearanceImage = null, string? pdfPassword = null)
     {
-        using var certificate = LoadPkcs12(pkcs12, pkcs12Password, out var chain);
-        string subjectName = certificate.GetNameInfo(X509NameType.SimpleName, forIssuer: false);
-        if (string.IsNullOrWhiteSpace(subjectName)) subjectName = "Unknown signer";
+        var identity = LoadPkcs12(pkcs12, pkcs12Password);
+        string subjectName = SimpleName(identity.Certificate) ?? "Unknown signer";
 
         var doc = PdfIo.Open(pdf, pdfPassword);
         var changed = new List<PdfObject>();
@@ -104,7 +109,7 @@ public static class Signer
 
         byte[] output = PdfIo.Guarded("signing the document",
             () => doc.SaveIncremental(changed.Distinct(ReferenceEqualityComparer.Instance).Cast<PdfObject>()));
-        return Seal(output, contentsPlaceholder, byteRangePlaceholder, certificate, chain);
+        return Seal(output, contentsPlaceholder, byteRangePlaceholder, identity);
     }
 
     /// <summary>
@@ -125,8 +130,7 @@ public static class Signer
     }
 
     /// <summary>Fills in /ByteRange and /Contents once the update's bytes are fixed.</summary>
-    private static byte[] Seal(byte[] output, string contentsPlaceholder, string byteRangePlaceholder,
-        X509Certificate2 certificate, X509Certificate2Collection chain)
+    private static byte[] Seal(byte[] output, string contentsPlaceholder, string byteRangePlaceholder, SigningIdentity identity)
     {
         byte[] marker = Encoding.ASCII.GetBytes(contentsPlaceholder);
         int contentsStart = output.AsSpan().LastIndexOf(marker);
@@ -144,17 +148,12 @@ public static class Signer
         Array.Copy(output, 0, signed, 0, contentsStart);
         Array.Copy(output, contentsEnd, signed, contentsStart, output.Length - contentsEnd);
 
-        var cms = new SignedCms(new ContentInfo(signed), detached: true);
-        var signer = new CmsSigner(SubjectIdentifierType.IssuerAndSerialNumber, certificate)
-        {
-            DigestAlgorithm = new Oid("2.16.840.1.101.3.4.2.1"), // SHA-256
-            IncludeOption = X509IncludeOption.EndCertOnly,
-        };
-        foreach (var extra in chain)
-            if (!extra.RawData.AsSpan().SequenceEqual(certificate.RawData)) signer.Certificates.Add(extra);
-        signer.SignedAttributes.Add(new Pkcs9SigningTime(DateTime.UtcNow));
-        cms.ComputeSignature(signer, silent: true);
-        byte[] encoded = cms.Encode();
+        // Detached CMS over SHA-256, the signer named by issuer and serial number; the signed
+        // attributes carry the content type, the digest and the signing time.
+        var generator = new CmsSignedDataGenerator();
+        generator.AddSigner(identity.PrivateKey, identity.Certificate, CmsSignedGenerator.DigestSha256);
+        generator.AddCertificates(CollectionUtilities.CreateStore(identity.Chain));
+        byte[] encoded = generator.Generate(new CmsProcessableByteArray(signed), encapsulate: false).GetEncoded(Asn1Encodable.Der);
         if (encoded.Length > SignatureSpace)
             throw new InvalidOperationException("The signature is larger than the space reserved for it.");
 
@@ -224,35 +223,61 @@ public static class Signer
 
             long[] r = range.ToDoubleArray().Select(v => (long)v).ToArray();
             bool coversWhole = r[0] == 0 && r[2] + r[3] == pdf.Length;
-            string? signer = null;
-            bool valid = false;
-            try
-            {
-                byte[] data = SignedBytes(pdf, r);
-                var cms = new SignedCms(new ContentInfo(data), detached: true);
-                cms.Decode(TrimSignature(contents.Bytes));
-                cms.CheckSignature(verifySignatureOnly: true);
-                valid = true;
-                signer = cms.SignerInfos[0].Certificate?.GetNameInfo(X509NameType.SimpleName, forIssuer: false);
-            }
-            catch (Exception ex) when (ex is CryptographicException or ArgumentException or InvalidOperationException)
-            {
-                // An integrity failure is the finding; the signer is still named when the CMS parses.
-                try
-                {
-                    var cms = new SignedCms();
-                    cms.Decode(TrimSignature(contents.Bytes));
-                    signer = cms.SignerInfos.Count > 0 ? cms.SignerInfos[0].Certificate?.GetNameInfo(X509NameType.SimpleName, false) : null;
-                }
-                catch (CryptographicException)
-                {
-                    // certificate subject parsing is best-effort
-                }
-            }
+            var (valid, signer) = Verify(pdf, r, contents.Bytes);
             found.Add((new SignatureInfo(field.Name, signer, valid, coversWhole), r[2] + r[3]));
         }
         // In revision order: the signature covering the least of the file was applied first.
         return found.OrderBy(f => f.Covered).Select(f => f.Info).ToList();
+    }
+
+    /// <summary>
+    /// Whether every signer in the CMS signed the byte range as it is, and the first signer's name.
+    /// Only integrity is judged: the certificate is not checked for trust, expiry or revocation.
+    /// </summary>
+    private static (bool Valid, string? Signer) Verify(byte[] pdf, long[] range, byte[] contents)
+    {
+        CmsSignedData cms;
+        try
+        {
+            cms = new CmsSignedData(ReadContentInfo(contents));
+        }
+        catch (Exception ex) when (IsUnreadable(ex))
+        {
+            return (false, null);
+        }
+
+        var signers = cms.GetSignerInfos().GetSigners();
+        var certificates = cms.GetCertificates();
+        string? name = signers.Select(s => certificates.EnumerateMatches(s.SignerID).FirstOrDefault())
+            .Select(c => c == null ? null : SimpleName(c)).FirstOrDefault();
+        try
+        {
+            var signed = new CmsSignedData(new CmsProcessableByteArray(SignedBytes(pdf, range)), cms.ContentInfo);
+            bool valid = signers.Count > 0 && signed.GetSignerInfos().GetSigners().All(s =>
+                certificates.EnumerateMatches(s.SignerID).FirstOrDefault() is { } certificate
+                && s.Verify(certificate.GetPublicKey()));
+            return (valid, name);
+        }
+        catch (Exception ex) when (IsUnreadable(ex))
+        {
+            // An integrity failure is the finding; the signer is still named when the CMS parses.
+            return (false, name);
+        }
+    }
+
+    /// <summary>The ways BouncyCastle reports a signature or certificate it cannot read or check.</summary>
+    private static bool IsUnreadable(Exception ex) =>
+        ex is CmsException or IOException or ArgumentException or InvalidCastException or InvalidOperationException
+            or CryptoException or SecurityUtilityException;
+
+    /// <summary>
+    /// The CMS ContentInfo at the start of /Contents, which is zero-padded to the space reserved
+    /// for it: only the first DER (or BER) object is read and the padding after it is ignored.
+    /// </summary>
+    private static CmsContentInfo ReadContentInfo(byte[] contents)
+    {
+        using var input = new Asn1InputStream(contents);
+        return CmsContentInfo.GetInstance(input.ReadObject() ?? throw new IOException("The signature is empty."));
     }
 
     private static byte[] SignedBytes(byte[] pdf, long[] r)
@@ -265,36 +290,43 @@ public static class Signer
         return data;
     }
 
-    /// <summary>Drops the zero padding after the DER-encoded signature.</summary>
-    private static byte[] TrimSignature(byte[] contents)
+    /// <summary>The signing key, its certificate, and every certificate the PKCS#12 file holds (the signer's first).</summary>
+    private sealed record SigningIdentity(AsymmetricKeyParameter PrivateKey, X509Certificate Certificate, IReadOnlyList<X509Certificate> Chain);
+
+    /// <summary>
+    /// Loads the signing key and its certificate, and the rest of the chain, from a PKCS#12 file. The
+    /// key is read in memory and never reaches a platform key store.
+    /// </summary>
+    private static SigningIdentity LoadPkcs12(byte[] pkcs12, string password)
     {
-        if (contents.Length < 4 || contents[0] != 0x30) return contents;
-        int length;
-        int header;
-        if ((contents[1] & 0x80) == 0) { length = contents[1]; header = 2; }
-        else
-        {
-            int n = contents[1] & 0x7F;
-            if (n is < 1 or > 4 || contents.Length < 2 + n) return contents;
-            length = 0;
-            for (int i = 0; i < n; i++) length = length << 8 | contents[2 + i];
-            header = 2 + n;
-        }
-        long total = (long)header + length;
-        return total > 0 && total <= contents.Length ? contents.AsSpan(0, (int)total).ToArray() : contents;
+        var contents = Pkcs12File.Read(pkcs12, password);
+        if (contents.Keys.Count == 0)
+            throw new ArgumentException("The PKCS#12 file contains no private key entry.");
+        var (key, id) = contents.Keys[0];
+        // The certificate the file pairs with the key, or failing that the one whose public key matches it.
+        var certificate = contents.Certificates.FirstOrDefault(c => id != null && c.Id != null && c.Id.AsSpan().SequenceEqual(id)).Certificate
+            ?? contents.Certificates.FirstOrDefault(c => IsKeyPair(key, c.Certificate.GetPublicKey())).Certificate
+            ?? throw new ArgumentException("The PKCS#12 file has no certificate for its private key.");
+        var chain = contents.Certificates.Select(c => c.Certificate).Where(c => !c.Equals(certificate)).Prepend(certificate).ToList();
+        return new SigningIdentity(key, certificate, chain);
     }
 
-    /// <summary>Loads the signing certificate (with its private key) and the rest of the chain.</summary>
-    private static X509Certificate2 LoadPkcs12(byte[] pkcs12, string password, out X509Certificate2Collection chain)
+    private static bool IsKeyPair(AsymmetricKeyParameter privateKey, AsymmetricKeyParameter publicKey) => (privateKey, publicKey) switch
     {
-        // Ephemeral keys never touch a key store; macOS cannot load them, so it uses its default.
-        var flags = OperatingSystem.IsMacOS() ? X509KeyStorageFlags.Exportable
-            : X509KeyStorageFlags.EphemeralKeySet | X509KeyStorageFlags.Exportable;
-        chain = new X509Certificate2Collection();
-        chain.Import(pkcs12, password, flags);
-        var withKey = chain.Cast<X509Certificate2>().FirstOrDefault(c => c.HasPrivateKey);
-        if (withKey == null)
-            throw new ArgumentException("The PKCS#12 file contains no private key entry.");
-        return withKey;
+        (RsaKeyParameters rsa, RsaKeyParameters pub) => rsa.Modulus.Equals(pub.Modulus),
+        (ECPrivateKeyParameters ec, ECPublicKeyParameters pub) => pub.Q.Equals(pub.Parameters.G.Multiply(ec.D)),
+        _ => false,
+    };
+
+    /// <summary>
+    /// The name to show for a certificate's subject: its common name, or failing that its
+    /// organisational unit, organisation or email address; null when it has none of them.
+    /// </summary>
+    private static string? SimpleName(X509Certificate certificate)
+    {
+        var subject = certificate.SubjectDN;
+        return new[] { X509Name.CN, X509Name.OU, X509Name.O, X509Name.EmailAddress }
+            .Select(oid => subject.GetValueList(oid).LastOrDefault(v => !string.IsNullOrWhiteSpace(v)))
+            .FirstOrDefault(v => v != null);
     }
 }

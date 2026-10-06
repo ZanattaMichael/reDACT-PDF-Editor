@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text;
 
 namespace PdfEditor.Core.Pdf;
@@ -145,15 +144,14 @@ internal sealed class PdfSecurityHandler
     private static byte[] LegacyKey(byte[] password, byte[] o, int p, byte[] firstId, int r, int keyLength,
         bool encryptMetadata)
     {
-        using var md5 = MD5.Create();
         var input = new List<byte>(Pad(password));
         input.AddRange(o.Take(32));
         input.AddRange(BitConverter.GetBytes(p).Take(4)); // little-endian, as the algorithm requires
         input.AddRange(firstId);
         if (r >= 4 && !encryptMetadata) input.AddRange(new byte[] { 0xFF, 0xFF, 0xFF, 0xFF });
-        byte[] hash = md5.ComputeHash(input.ToArray());
+        byte[] hash = PdfCrypto.Md5(input.ToArray());
         if (r >= 3)
-            for (int i = 0; i < 50; i++) hash = md5.ComputeHash(hash, 0, keyLength);
+            for (int i = 0; i < 50; i++) hash = PdfCrypto.Md5(hash, keyLength);
         return hash.Take(keyLength).ToArray();
     }
 
@@ -162,27 +160,25 @@ internal sealed class PdfSecurityHandler
     {
         if (r == 2)
         {
-            byte[] expected = Rc4(key, Padding);
+            byte[] expected = PdfCrypto.Rc4(key, Padding);
             return u.Length >= 32 && expected.AsSpan().SequenceEqual(u.AsSpan(0, 32));
         }
-        using var md5 = MD5.Create();
-        byte[] hash = md5.ComputeHash(Padding.Concat(firstId).ToArray());
-        byte[] value = Rc4(key, hash);
-        for (int i = 1; i <= 19; i++) value = Rc4(XorKey(key, i), value);
+        byte[] hash = PdfCrypto.Md5(Padding.Concat(firstId).ToArray());
+        byte[] value = PdfCrypto.Rc4(key, hash);
+        for (int i = 1; i <= 19; i++) value = PdfCrypto.Rc4(XorKey(key, i), value);
         return u.Length >= 16 && value.AsSpan(0, 16).SequenceEqual(u.AsSpan(0, 16));
     }
 
     /// <summary>Algorithm 7: decrypts /O with the owner password to recover the user password.</summary>
     private static byte[] RecoverUserPassword(byte[] ownerPassword, byte[] o, int r, int keyLength)
     {
-        using var md5 = MD5.Create();
-        byte[] hash = md5.ComputeHash(Pad(ownerPassword));
+        byte[] hash = PdfCrypto.Md5(Pad(ownerPassword));
         if (r >= 3)
-            for (int i = 0; i < 50; i++) hash = md5.ComputeHash(hash);
+            for (int i = 0; i < 50; i++) hash = PdfCrypto.Md5(hash);
         byte[] key = hash.Take(r == 2 ? 5 : keyLength).ToArray();
         byte[] value = o.Take(32).ToArray();
-        if (r == 2) return Rc4(key, value);
-        for (int i = 19; i >= 0; i--) value = Rc4(XorKey(key, i), value);
+        if (r == 2) return PdfCrypto.Rc4(key, value);
+        for (int i = 19; i >= 0; i--) value = PdfCrypto.Rc4(XorKey(key, i), value);
         return value;
     }
 
@@ -215,12 +211,9 @@ internal sealed class PdfSecurityHandler
     private static byte[] Hash(int r, byte[] password, ReadOnlySpan<byte> salt, byte[] userData)
     {
         byte[] input = password.Concat(salt.ToArray()).Concat(userData).ToArray();
-        byte[] k = SHA256.HashData(input);
+        byte[] k = PdfCrypto.Sha256(input);
         if (r == 5) return k;
 
-        using var aes = Aes.Create();
-        aes.Mode = CipherMode.CBC;
-        aes.Padding = PaddingMode.None;
         int round = 0;
         byte[] e;
         while (true)
@@ -234,15 +227,14 @@ internal sealed class PdfSecurityHandler
                 k.CopyTo(k1, at + password.Length);
                 userData.CopyTo(k1, at + password.Length + k.Length);
             }
-            aes.Key = k.AsSpan(0, 16).ToArray();
-            e = aes.EncryptCbc(k1, k.AsSpan(16, 16), PaddingMode.None);
+            e = PdfCrypto.AesCbcEncrypt(k[..16], k[16..32], k1, pad: false);
             int mod = 0;
             for (int i = 0; i < 16; i++) mod += e[i];
             k = (mod % 3) switch
             {
-                0 => SHA256.HashData(e),
-                1 => SHA384.HashData(e),
-                _ => SHA512.HashData(e),
+                0 => PdfCrypto.Sha256(e),
+                1 => PdfCrypto.Sha384(e),
+                _ => PdfCrypto.Sha512(e),
             };
             round++;
             if (round >= 64 && e[^1] <= round - 32) break;
@@ -252,10 +244,8 @@ internal sealed class PdfSecurityHandler
 
     private static byte[] AesNoIv(byte[] key, byte[] data, bool decrypt)
     {
-        using var aes = Aes.Create();
-        aes.Key = key;
         var iv = new byte[16];
-        return decrypt ? aes.DecryptCbc(data, iv, PaddingMode.None) : aes.EncryptCbc(data, iv, PaddingMode.None);
+        return decrypt ? PdfCrypto.AesCbcDecrypt(key, iv, 0, data, 0, data.Length) : PdfCrypto.AesCbcEncrypt(key, iv, data, pad: false);
     }
 
     // ------------------------------------------------------------------ decrypting objects
@@ -284,22 +274,18 @@ internal sealed class PdfSecurityHandler
             case Cipher.None:
                 return data;
             case Cipher.Rc4:
-                return Rc4(ObjectKey(number, generation, aes: false), data);
+                return PdfCrypto.Rc4(ObjectKey(number, generation, aes: false), data);
             default:
                 if (data.Length < 16) return Array.Empty<byte>(); // an IV with no ciphertext: empty
                 byte[] key = cipher == Cipher.AesV3 ? _key : ObjectKey(number, generation, aes: true);
-                using (var aes = Aes.Create())
-                {
-                    aes.Key = key;
-                    int length = (data.Length - 16) / 16 * 16;
-                    if (length == 0) return Array.Empty<byte>();
-                    byte[] plain = aes.DecryptCbc(data.AsSpan(16, length), data.AsSpan(0, 16), PaddingMode.None);
-                    // PKCS#7 padding, removed leniently: some producers pad incorrectly, and dropping
-                    // a document over a padding byte would be pedantry, not safety.
-                    int pad = plain[^1];
-                    if (pad is >= 1 and <= 16 && pad <= plain.Length) return plain.AsSpan(0, plain.Length - pad).ToArray();
-                    return plain;
-                }
+                int length = (data.Length - 16) / 16 * 16;
+                if (length == 0) return Array.Empty<byte>();
+                byte[] plain = PdfCrypto.AesCbcDecrypt(key, data, 0, data, 16, length);
+                // PKCS#7 padding, removed leniently: some producers pad incorrectly, and dropping
+                // a document over a padding byte would be pedantry, not safety.
+                int pad = plain[^1];
+                if (pad is >= 1 and <= 16 && pad <= plain.Length) return plain.AsSpan(0, plain.Length - pad).ToArray();
+                return plain;
         }
     }
 
@@ -314,28 +300,8 @@ internal sealed class PdfSecurityHandler
         input[_key.Length + 3] = (byte)generation;
         input[_key.Length + 4] = (byte)(generation >> 8);
         if (aes) "sAlT"u8.CopyTo(input.AsSpan(_key.Length + 5));
-        byte[] hash = MD5.HashData(input);
+        byte[] hash = PdfCrypto.Md5(input);
         return hash.Take(Math.Min(_key.Length + 5, 16)).ToArray();
-    }
-
-    internal static byte[] Rc4(byte[] key, byte[] data)
-    {
-        var s = new byte[256];
-        for (int i = 0; i < 256; i++) s[i] = (byte)i;
-        for (int i = 0, j = 0; i < 256; i++)
-        {
-            j = (j + s[i] + key[i % key.Length]) & 0xFF;
-            (s[i], s[j]) = (s[j], s[i]);
-        }
-        var output = new byte[data.Length];
-        for (int k = 0, i = 0, j = 0; k < data.Length; k++)
-        {
-            i = (i + 1) & 0xFF;
-            j = (j + s[i]) & 0xFF;
-            (s[i], s[j]) = (s[j], s[i]);
-            output[k] = (byte)(data[k] ^ s[(s[i] + s[j]) & 0xFF]);
-        }
-        return output;
     }
 
     // ------------------------------------------------------------------ encrypting (writing)
@@ -347,15 +313,15 @@ internal sealed class PdfSecurityHandler
     /// </summary>
     public static (PdfSecurityHandler Handler, PdfDictionary Dictionary) CreateAes256(string userPassword, string ownerPassword)
     {
-        byte[] fileKey = RandomNumberGenerator.GetBytes(32);
+        byte[] fileKey = PdfCrypto.RandomBytes(32);
         byte[] user = Utf8Password(userPassword);
         byte[] owner = Utf8Password(ownerPassword);
 
-        byte[] uvs = RandomNumberGenerator.GetBytes(8), uks = RandomNumberGenerator.GetBytes(8);
+        byte[] uvs = PdfCrypto.RandomBytes(8), uks = PdfCrypto.RandomBytes(8);
         byte[] u = Hash(6, user, uvs, Array.Empty<byte>()).Concat(uvs).Concat(uks).ToArray();
         byte[] ue = AesNoIv(Hash(6, user, uks, Array.Empty<byte>()), fileKey, decrypt: false);
 
-        byte[] ovs = RandomNumberGenerator.GetBytes(8), oks = RandomNumberGenerator.GetBytes(8);
+        byte[] ovs = PdfCrypto.RandomBytes(8), oks = PdfCrypto.RandomBytes(8);
         byte[] o = Hash(6, owner, ovs, u).Concat(ovs).Concat(oks).ToArray();
         byte[] oe = AesNoIv(Hash(6, owner, oks, u), fileKey, decrypt: false);
 
@@ -368,13 +334,8 @@ internal sealed class PdfSecurityHandler
         perms[9] = (byte)'a';
         perms[10] = (byte)'d';
         perms[11] = (byte)'b';
-        RandomNumberGenerator.GetBytes(4).CopyTo(perms, 12);
-        byte[] permsEncrypted;
-        using (var aes = Aes.Create())
-        {
-            aes.Key = fileKey;
-            permsEncrypted = aes.EncryptEcb(perms, PaddingMode.None);
-        }
+        PdfCrypto.RandomBytes(4).CopyTo(perms, 12);
+        byte[] permsEncrypted = PdfCrypto.AesEcbEncryptBlock(fileKey, perms);
 
         var stdCf = new PdfDictionary();
         stdCf.Put(PdfName.Of("AuthEvent"), PdfName.Of("DocOpen"));
@@ -415,15 +376,11 @@ internal sealed class PdfSecurityHandler
             case Cipher.None:
                 return data;
             case Cipher.Rc4:
-                return Rc4(ObjectKey(number, generation, aes: false), data);
+                return PdfCrypto.Rc4(ObjectKey(number, generation, aes: false), data);
             default:
-                using (var aes = Aes.Create())
-                {
-                    aes.Key = cipher == Cipher.AesV3 ? _key : ObjectKey(number, generation, aes: true);
-                    byte[] iv = RandomNumberGenerator.GetBytes(16);
-                    byte[] encrypted = aes.EncryptCbc(data, iv, PaddingMode.PKCS7);
-                    return iv.Concat(encrypted).ToArray();
-                }
+                byte[] key = cipher == Cipher.AesV3 ? _key : ObjectKey(number, generation, aes: true);
+                byte[] iv = PdfCrypto.RandomBytes(16);
+                return iv.Concat(PdfCrypto.AesCbcEncrypt(key, iv, data, pad: true)).ToArray();
         }
     }
 }

@@ -2,8 +2,8 @@
 
 /**
  * Passwords and signatures, end to end: removing encryption, opening with the owner password or
- * after a wrong one, edits keeping a protected document encrypted, signing (twice, and with a
- * certificate made by OpenSSL), and what the viewer says about a signed file that was changed
+ * after a wrong one, edits keeping a protected document encrypted, signing (twice, and with
+ * certificates made by OpenSSL, one under a non-ASCII password), and what the viewer says about a signed file that was changed
  * afterwards. Encryption is read from the saved file's trailer and checked by poppler, which
  * decrypts independently of the engine; every signature is verified by OpenSSL over the bytes
  * its /ByteRange names.
@@ -237,6 +237,23 @@ test.describe('Digital signatures', () => {
     expect(plain(model.get(dict, 'Reason'))).toBe('Reviewed');
     expect(plain(model.get(dict, 'Location'))).toBe('Sydney');
     expect(plain(model.get(dict, 'SubFilter'))).toBe('adbe.pkcs7.detached');
+  });
+
+  test('a certificate whose password is not ASCII signs too', async () => {
+    // OpenSSL 3 protects the key with AES (PBES2) and takes the password as UTF-8 bytes;
+    // BouncyCastle's own PKCS#12 store would turn it into Latin-1 and fail to open the file.
+    const password = 'pässwörd-ключ';
+    const p12 = makePkcs12(session.fixtureDir, 'Unicode Password Signer', password);
+    const page = await openCapturingViewerWith(writeFixture('utf8-cert.pdf', agreement()));
+    await signWithFile(page, p12, password);
+    await expect(page.locator('#status')).toContainText('digitally signed');
+    await expect(page.locator('#badges .badge.signed')).toContainText('Unicode Password Signer');
+    const exported = await saveExport(page, 'utf8-cert-signed.pdf');
+    await page.close();
+
+    const [signature] = readPdf(exported.bytes).signatures();
+    const check = verify(exported.bytes, signature);
+    expect(check.output).toContain('Verification successful');
   });
 
   test('the wrong certificate password signs nothing and says why', async () => {
