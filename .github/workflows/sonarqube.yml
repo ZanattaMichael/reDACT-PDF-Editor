@@ -103,7 +103,13 @@ jobs:
       # --- Publish the findings to GitHub code scanning -------------------------------------
       # SonarQube Cloud has no SARIF export of its own, so the issues are read back from its API
       # and translated. Without this the only way to see what was flagged is to leave GitHub.
+      - name: Verify the findings download
+        # The fetcher's own tests, against a stand-in API: chiefly that it waits for the issue
+        # search to catch up with this analysis rather than publishing the previous one's findings.
+        run: python3 scripts/test_fetch_sonar_issues.py
       - name: Download SonarQube findings
+        # Waits for the analysis to be processed, then for the issue search to agree with it; see
+        # the docstring in scripts/fetch_sonar_issues.py.
         id: findings
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
