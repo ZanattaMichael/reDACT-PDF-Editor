@@ -6,6 +6,8 @@ it has to survive: the analysis task reports SUCCESS while the issue search stil
 previous analysis's issues for a moment.
 """
 
+import contextlib
+import io
 import json
 import os
 import sys
@@ -117,9 +119,9 @@ class WaitForIndexTests(NoSleep):
 
     def test_gives_up_after_the_timeout(self):
         fake = FakeSonar([], [STALE])
-        clock = iter(range(0, 1000, 50))  # each reading of the clock is 50 s later
+        clock = range(0, 1000, 50)  # each reading of the clock is 50 s later
         with mock.patch.object(fetch_sonar_issues, "get_json", fake), \
-                mock.patch.object(fetch_sonar_issues.time, "monotonic", lambda: next(clock)):
+                mock.patch.object(fetch_sonar_issues.time, "monotonic", side_effect=clock):
             self.assertFalse(fetch_sonar_issues.wait_for_index(BASE, PROJECT, "t", "179", None,
                                                                expected=1, timeout_seconds=120))
         self.assertGreater(len(fake.urls), 1)
@@ -129,6 +131,11 @@ class MainTests(NoSleep):
     """The whole download, in a scratch working tree with the scanner's report-task.txt."""
 
     def run_main(self, fake, extra_args=()):
+        """Runs the download; returns its exit code, the rules it wrote, and what it printed to stdout.
+
+        Stdout is captured because that is where workflow commands go: a `::warning::` that
+        escaped from here would be shown as a warning on the real CI run.
+        """
         with tempfile.TemporaryDirectory() as work:
             report = Path(work, ".sonarqube/out/.sonar/report-task.txt")
             report.parent.mkdir(parents=True)
@@ -137,31 +144,37 @@ class MainTests(NoSleep):
             cwd = os.getcwd()
             os.chdir(work)
             try:
+                stdout = io.StringIO()
                 with mock.patch.object(fetch_sonar_issues, "get_json", fake), \
-                        mock.patch.dict(os.environ, {"SONAR_TOKEN": "t"}):
+                        mock.patch.dict(os.environ, {"SONAR_TOKEN": "t"}), \
+                        contextlib.redirect_stdout(stdout):
                     os.environ.pop("GITHUB_OUTPUT", None)  # restored when the patch ends
                     code = fetch_sonar_issues.main(
                         ["--output", "issues.json", "--pull-request", "179", *extra_args])
                 written = json.loads(Path(work, "issues.json").read_text(encoding="utf-8"))
             finally:
                 os.chdir(cwd)
-        return code, [i["rule"] for i in written["issues"]]
+        return code, [i["rule"] for i in written["issues"]], stdout.getvalue()
 
     def test_publishes_this_analysis_issues_not_the_previous_ones(self):
         fake = FakeSonar([{"metric": "violations", "value": "1"}], [STALE, STALE, FRESH])
-        code, rules = self.run_main(fake)
+        code, rules, stdout = self.run_main(fake)
         self.assertEqual(code, 0)
         self.assertEqual(rules, ["csharpsquid:S1751"])
+        self.assertNotIn("::warning::", stdout)
 
     def test_still_publishes_when_the_search_never_catches_up(self):
         fake = FakeSonar([{"metric": "violations", "value": "1"}], [STALE])
-        code, rules = self.run_main(fake, ["--index-timeout", "0"])
+        code, rules, stdout = self.run_main(fake, ["--index-timeout", "0"])
         self.assertEqual(code, 0)
         self.assertEqual(len(rules), 7)
+        # ...and says so where the run summary shows it.
+        self.assertIn("::warning::", stdout)
+        self.assertIn("(1 open issues)", stdout)
 
     def test_reads_the_search_straight_away_when_there_is_no_count(self):
         fake = FakeSonar([], [FRESH])
-        code, rules = self.run_main(fake)
+        code, rules, _ = self.run_main(fake)
         self.assertEqual((code, rules), (0, ["csharpsquid:S1751"]))
         self.sleep.assert_not_called()
 
